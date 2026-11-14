@@ -22,7 +22,10 @@ fn main() {
     });
 
     window.set_target_fps(60);
-    read_rom_header(rom_path);
+    match read_rom_header(rom_path) {
+        Ok(_) => println!("yay!"),
+        Err(e) => println!("{}", e),
+    }
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         for i in buffer.iter_mut() {

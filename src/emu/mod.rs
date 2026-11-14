@@ -10,7 +10,7 @@ enum RomError {
 }
 
 impl Display for RomError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InvalidRom => println!("Invalid Rom."),
         }
