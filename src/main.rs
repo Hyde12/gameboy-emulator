@@ -23,7 +23,7 @@ fn main() {
 
     window.set_target_fps(60);
     match read_rom_header(rom_path) {
-        Ok(_) => println!("yay!"),
+        Ok(_) => {}
         Err(e) => println!("{}", e),
     }
 
