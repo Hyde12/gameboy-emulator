@@ -1,5 +1,5 @@
+use super::helpers::combine_bytes;
 use super::registers::{FlagRegister, Register, Register8};
-use super::helpers::{combine_bytes}
 
 const SCREEN_WIDTH: usize = 160;
 const SCREEN_HEIGHT: usize = 144;
