@@ -1,3 +1,6 @@
+use super::registers::{FlagRegister, Register, Register8};
+use super::helpers::{combine_bytes}
+
 const SCREEN_WIDTH: usize = 160;
 const SCREEN_HEIGHT: usize = 144;
 
@@ -17,14 +20,14 @@ pub struct Gameboy {
     memory_map: [u8; BANK_SIZE], // 16 bit address bus
 
     // Registers
-    a_reg: u8,
+    a_reg: Register,
+    b_reg: Register,
+    c_reg: Register,
+    d_reg: Register,
+    e_reg: Register,
+    h_reg: Register,
+    l_reg: Register,
     f_reg: FlagRegister,
-    b_reg: u8,
-    c_reg: u8,
-    d_reg: u8,
-    e_reg: u8,
-    h_reg: u8,
-    l_reg: u8,
     sp: u16,
     pc: u16,
 }
@@ -36,14 +39,14 @@ impl Gameboy {
             wram: [0; VRAM_SIZE],
             oam: [0; OAM_SIZE],
             memory_map: [0; BANK_SIZE],
-            a_reg: 0x01,
-            f_reg: FlagRegister { f_reg: 0x0 },
-            b_reg: 0xFF,
-            c_reg: 0x13,
-            d_reg: 0x00,
-            e_reg: 0xC1,
-            h_reg: 0x84,
-            l_reg: 0x03,
+            a_reg: Register::new(0x01),
+            b_reg: Register::new(0xFF),
+            c_reg: Register::new(0x13),
+            d_reg: Register::new(0x00),
+            e_reg: Register::new(0xC1),
+            h_reg: Register::new(0x84),
+            l_reg: Register::new(0x03),
+            f_reg: FlagRegister::new(0x0),
             pc: ENTRY_POINT as u16,
             sp: 0xFFFE,
         }
@@ -59,26 +62,72 @@ impl Gameboy {
 
         byte
     }
-}
 
-struct FlagRegister {
-    f_reg: u8,
-}
+    fn decode(&mut self) {
+        let opcode = self.fetch();
 
-impl FlagRegister {
-    fn zero_flag(&self) -> bool {
-        (self.f_reg & 0b0100_0000) >> 7 == 1
-    }
+        match opcode {
+            // NOP
+            0x0 => {}
 
-    fn subtraction_flag(&self) -> bool {
-        (self.f_reg & 0b1000_0000) >> 7 == 1
-    }
+            // LD BC, d16
+            0x1 => {
+                let high_byte = self.fetch();
+                let low_byte = self.fetch();
+                let new_val = combine_bytes(high_byte, low_byte);
 
-    fn half_carry_flag(&self) -> bool {
-        (self.f_reg & 0b0001_0000) >> 7 == 1
-    }
+                self.b_reg.combine_and_write(&mut self.c_reg, new_val);
+            }
 
-    fn carry_flag(&self) -> bool {
-        (self.f_reg & 0b0000_1000) >> 7 == 1
+            // LD B, d8
+            0x06 => {
+                let new_val = self.fetch();
+                self.b_reg.set(new_val)
+            }
+
+            // LD C, d8
+            0x0E => {
+                let new_val = self.fetch();
+                self.c_reg.set(new_val)
+            }
+
+            // LD D, d8
+            0x16 => {
+                let new_val = self.fetch();
+                self.d_reg.set(new_val)
+            }
+
+            // LD E, d8
+            0x1E => {
+                let new_val = self.fetch();
+                self.e_reg.set(new_val)
+            }
+
+            // LD H, d8
+            0x26 => {
+                let new_val = self.fetch();
+                self.h_reg.set(new_val)
+            }
+
+            // LD L, d8
+            0x2E => {
+                let new_val = self.fetch();
+                self.l_reg.set(new_val)
+            }
+
+            // JP nn or PC = nn
+            0xC3 => {
+                let low_byte = self.fetch();
+                let high_byte = self.fetch();
+                self.pc = combine_bytes(high_byte, low_byte);
+            }
+
+            //LD A, n8
+            0x3E => {
+                let new_val = self.fetch();
+                self.a_reg.set(new_val)
+            }
+            _ => unimplemented!("Operation code not recognized. Code: {}", opcode),
+        }
     }
 }
