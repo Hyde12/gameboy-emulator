@@ -1,6 +1,6 @@
 use std::{error::Error, fmt::Display};
 
-pub mod rom_reader;
+pub mod gameboy;
 
 #[derive(Debug)]
 enum RomError {

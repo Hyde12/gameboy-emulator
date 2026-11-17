@@ -1,7 +1,5 @@
 mod emu;
 
-use crate::emu::rom_reader::read_rom_header;
-
 use minifb::{self, Key, Window, WindowOptions};
 use std::path::Path;
 
@@ -22,10 +20,10 @@ fn main() {
     });
 
     window.set_target_fps(60);
-    match read_rom_header(rom_path) {
-        Ok(_) => {}
-        Err(e) => println!("{}", e),
-    }
+    // match read_rom_header(rom_path) {
+    //     Ok(_) => {}
+    //     Err(e) => println!("{}", e),
+    // }
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         for i in buffer.iter_mut() {
