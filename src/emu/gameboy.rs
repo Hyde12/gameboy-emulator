@@ -1,15 +1,19 @@
 use super::helpers::combine_bytes;
 use super::registers::{FlagRegister, Register, Register8};
 
+// // Specifications
+// Screen
 const SCREEN_WIDTH: usize = 160;
 const SCREEN_HEIGHT: usize = 144;
 
+// Hardware
 const RAM_SIZE: usize = 8192;
 const VRAM_SIZE: usize = 8192;
 const HRAM_SIZE: usize = 127;
 const BANK_SIZE: usize = 0xFFFF;
 const OAM_SIZE: usize = 40;
 
+// Memory Pointers
 const ENTRY_POINT: u16 = 0x0100;
 
 pub struct Gameboy {
@@ -115,6 +119,19 @@ impl Gameboy {
                 self.l_reg.set(new_val)
             }
 
+            0x76 => {
+                // halt
+                todo!()
+            }
+
+            // LD register to register (block 1 pandocs)
+            0x40..=0x7F => {
+                let dest = (opcode & 0b0011_1000) >> 3;
+                let source = opcode & 0b111;
+                let source_value = self.read_r8_pattern(source);
+                self.write_r8_pattern(dest, source_value);
+            }
+
             // JP nn or PC = nn
             0xC3 => {
                 let low_byte = self.fetch();
@@ -128,6 +145,34 @@ impl Gameboy {
                 self.a_reg.set(new_val)
             }
             _ => unimplemented!("Operation code not recognized. Code: {}", opcode),
+        }
+    }
+
+    fn read_r8_pattern(&self, source: u8) -> u8 {
+        match source {
+            0 => self.b_reg.read(),
+            1 => self.c_reg.read(),
+            2 => self.d_reg.read(),
+            3 => self.e_reg.read(),
+            4 => self.h_reg.read(),
+            5 => self.l_reg.read(),
+            6 => todo!(),
+            7 => self.a_reg.read(),
+            _ => panic!("R8 Byte matching error. Source: {}", source),
+        }
+    }
+
+    fn write_r8_pattern(&mut self, destination: u8, value: u8) {
+        match destination {
+            0 => self.b_reg.set(value),
+            1 => self.c_reg.set(value),
+            2 => self.d_reg.set(value),
+            3 => self.e_reg.set(value),
+            4 => self.h_reg.set(value),
+            5 => self.l_reg.set(value),
+            6 => todo!(),
+            7 => self.a_reg.set(value),
+            _ => panic!("R8 byte matching error. Destination: {}", destination),
         }
     }
 }
