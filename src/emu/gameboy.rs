@@ -132,69 +132,56 @@ impl Gameboy {
                 self.write_r8_pattern(dest, source_value);
             }
 
-            // ADD A, r8
-            0x80..=0x87 => {
-                let operand = self.read_r8_pattern(opcode & 0b111); // wat da r8
-                let did_half_carry = ((self.a_reg.read() & 0x0F) + (operand & 0x0F)) > 0x0F; // checks spillover to left nibble
-                let (result, overflowed) = self.a_reg.read().overflowing_add(operand); // checks overflow
+            // 8-bit arithmetic (block 2 opcode)
+            0x80..=0xBF | _ if (opcode & 0b1100_0110) == 0b1100_0110 => {
+                let arithmetic = (opcode & 0b0011_1000) >> 3;
 
-                // Set registers
-                self.a_reg.set(result);
+                let a = self.a_reg.read();
+                let operand;
+
+                if opcode & 0b0100_0000 > 0 { // check if value is immediate or not
+                    operand = self.fetch();
+                } else {
+                    operand = self.read_r8_pattern(opcode & 0b111);
+                }
+
+                // Z N H C
+                let flags: (u8, bool, bool, bool);
+
+                match arithmetic {
+                    0b000 => { // ADD A, r8
+                        flags = self.add_8_bit(a, operand);
+                    }
+                    0b001 => { // ADC A, r8
+                        flags = self.adc_8_bit(a, operand);
+                    }
+                    0b010 => { // SUB A, r8
+                        flags = self.sub_8_bit(a, operand);
+                    }
+                    0b011 => { // SBC A, r8
+                        flags = self.sbc_8_bit(a, operand)
+                    }
+                    0b100 => { // AND A, r8
+                        flags = self.and_8_bit(a, operand)
+                    }
+                    0b101 => { // XOR A, r8
+                        flags = self.xor_8_bit(a, operand)
+                    }
+                    0b110 => { // OR A, r8
+                        flags = self.or_8_bit(a, operand)
+                    }
+                    0b111 => { // CP A, r8
+                        flags = self.sub_8_bit(a, operand)
+                    }
+                    _ => unreachable!(),
+                }
+
+                if arithmetic != 0b111 {
+                    self.a_reg.set(flags.0);
+                }
+
                 self.f_reg
-                    .flag_reg_set(result == 0, false, did_half_carry, overflowed);
-            }
-
-            // ADC A, r8
-            0x88..=0x8F => {
-                let a = self.a_reg.read();
-                let operand = self.read_r8_pattern(opcode & 0b111);
-                let carry_flag = self.f_reg.get_carry_flag();
-
-                let (a_r8, did_overflow_1) = a.overflowing_add(operand);
-                let (result, did_overflow_2) = a_r8.overflowing_add(carry_flag);
-
-                let did_half_carry = ((a & 0x0F) + (operand & 0x0F) + carry_flag) > 0x0F;
-
-                self.a_reg.set(result);
-                self.f_reg.flag_reg_set(
-                    result == 0,
-                    false,
-                    did_half_carry,
-                    did_overflow_1 || did_overflow_2,
-                );
-            }
-
-            // SUB A, r8
-            0x90..=0x97 => {
-                let a = self.a_reg.read();
-                let operand = self.read_r8_pattern(opcode & 0b111);
-
-                let (result, did_underflow) = a.overflowing_sub(operand);
-                let did_half_carry = (operand & 0x0F) > (a & 0x0F);
-
-                self.a_reg.set(result);
-                self.f_reg
-                    .flag_reg_set(result == 0, true, did_half_carry, did_underflow);
-            }
-
-            // SBC A, r8
-            0x98..=0x9F => {
-                let a = self.a_reg.read();
-                let operand = self.read_r8_pattern(opcode & 0b111);
-                let carry_flag = self.f_reg.get_carry_flag();
-
-                let (a_r8, did_underflow_1) = a.overflowing_sub(operand);
-                let (result, did_underflow_2) = a_r8.overflowing_sub(carry_flag);
-                let did_half_carry =
-                    ((operand & 0x0F) > (a & 0x0F)) || ((carry_flag) > (a_r8 & 0x0F));
-
-                self.a_reg.set(result);
-                self.f_reg.flag_reg_set(
-                    result == 0,
-                    true,
-                    did_half_carry,
-                    did_underflow_1 || did_underflow_2,
-                );
+                    .flag_reg_set(flags.0 == 0, flags.1, flags.2, flags.3);
             }
 
             // JP nn or PC = nn
@@ -211,6 +198,60 @@ impl Gameboy {
             }
             _ => unimplemented!("Operation code not recognized. Code: {}", opcode),
         }
+    }
+
+
+}
+
+impl Gameboy {
+    fn add_8_bit(&self, a: u8, operand: u8) -> (u8, bool, bool, bool) {
+        let (result, did_carry) = a.overflowing_add(operand);
+        let did_half_carry = ((a & 0x0F) + (operand & 0x0F)) > 0x0F;
+
+        (result, false, did_half_carry, did_carry)
+    }
+
+    fn adc_8_bit(&self, a: u8, operand: u8) -> (u8, bool, bool, bool) {
+        let carry_flag = self.f_reg.get_carry_flag();
+
+        let (a_r8, did_overflow_1) = a.overflowing_add(operand);
+        let (a_r8_c, did_overflow_2) = a_r8.overflowing_add(carry_flag);
+
+        let did_half_carry = ((a & 0x0F) + (operand & 0x0F) + carry_flag) > 0x0F;
+        let did_carry = did_overflow_1 || did_overflow_2;
+
+        (a_r8_c, false, did_half_carry, did_carry)
+    }
+
+    fn sub_8_bit(&self, a: u8, operand: u8) -> (u8, bool, bool, bool) {
+        let (result, did_carry) = a.overflowing_sub(operand);
+        let did_half_carry = (operand & 0x0F) > (a & 0x0F);
+
+        (result, true, did_half_carry, did_carry)
+    }
+
+    fn sbc_8_bit(&self, a: u8, operand: u8) -> (u8, bool, bool, bool) {
+        let carry_flag = self.f_reg.get_carry_flag();
+
+        let (a_r8, did_underflow_1) = a.overflowing_sub(operand);
+        let (a_r8_c, did_underflow_2) = a_r8.overflowing_sub(carry_flag);
+
+        let did_half_carry = (operand & 0x0F) + 1 > a & 0x0F;
+        let did_carry = did_underflow_1 || did_underflow_2;
+
+        (a_r8_c, true, did_half_carry, did_carry)
+    }
+
+    fn and_8_bit(&self, a: u8, operand: u8) -> (u8, bool, bool, bool) {
+        (a & operand, false, true, false)
+    }
+
+    fn xor_8_bit(&self, a: u8, operand: u8) -> (u8, bool, bool, bool) {
+        (a ^ operand, false, false, false)
+    }
+
+    fn or_8_bit(&self, a: u8, operand: u8) -> (u8, bool, bool, bool) {
+        (a | operand, false, false, false)
     }
 
     fn read_r8_pattern(&self, source: u8) -> u8 {
