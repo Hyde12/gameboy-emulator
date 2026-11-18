@@ -1,4 +1,5 @@
-use super::helpers::combine_bytes;
+use super::helpers::{combine_bytes};
+use super::rom::ROMData;
 use super::registers::{FlagRegister, Register, Register8};
 
 // // Specifications
@@ -14,14 +15,28 @@ const BANK_SIZE: usize = 0xFFFF;
 const OAM_SIZE: usize = 40;
 
 // Memory Pointers
-const ENTRY_POINT: u16 = 0x0100;
+const ENTRY_POINT: usize = 0x0100;
+const ROM_BANK_0: usize = 0x0000;
+const ROM_BANK_1: usize = 0x4000;
+const VRAM_START: usize = 0x8000;
+const EXT_RAM_START: usize = 0xA000;
+const WRAM_1_START: usize = 0xC000;
+const WRAM_2_START: usize = 0xD000;
+const ECH_RAM_START: usize = 0xE000;
+const OAM_START: usize = 0xFE00;
+const UNUSABLE_START: usize = 0xFEA0;
+const IO_REGISTERS_START: usize = 0xFF00;
+const H_RAM_START: usize = 0xFF80;
+const IE_REGISTER: usize = 0xFFFF;
 
 pub struct Gameboy {
     // Hardware
+    rom: ROMData,
     vram: [u8; VRAM_SIZE],
-    wram: [u8; RAM_SIZE],
+    wram_1: [u8; RAM_SIZE / 2],
+    wram_2: [u8; RAM_SIZE / 2],
     oam: [u8; OAM_SIZE],
-    memory_map: [u8; BANK_SIZE], // 16 bit address bus
+    hram: [u8; HRAM_SIZE],
 
     // Registers
     a_reg: Register,
@@ -39,10 +54,12 @@ pub struct Gameboy {
 impl Gameboy {
     pub fn new() -> Self {
         Gameboy {
+            rom: ROMData::new(),
             vram: [0; VRAM_SIZE],
-            wram: [0; VRAM_SIZE],
+            wram_1: [0; RAM_SIZE / 2],
+            wram_2: [0; RAM_SIZE / 2],
             oam: [0; OAM_SIZE],
-            memory_map: [0; BANK_SIZE],
+            hram: [0; HRAM_SIZE],
             a_reg: Register::new(0x01),
             b_reg: Register::new(0xFF),
             c_reg: Register::new(0x13),
@@ -56,15 +73,18 @@ impl Gameboy {
         }
     }
 
-    pub fn load_rom(&mut self, rom_data: &[u8]) {
-        self.memory_map[0x0000..=0x7FFF].copy_from_slice(rom_data); // loads ROM data onto memory map
-    }
-
     fn fetch(&mut self) -> u8 {
-        let byte = self.memory_map[self.pc as usize];
+        let byte = self.read_bus(self.pc as usize);
         self.pc += 1;
 
         byte
+    }
+
+    fn fetch_d16(&mut self) -> u16 {
+        let low_byte = self.fetch();
+        let high_byte = self.fetch();
+
+        combine_bytes(high_byte, low_byte)
     }
 
     fn decode(&mut self) {
@@ -74,13 +94,35 @@ impl Gameboy {
             // NOP
             0x00 => {}
 
-            // LD BC, d16
-            0x01 => {
-                let high_byte = self.fetch();
-                let low_byte = self.fetch();
-                let new_val = combine_bytes(high_byte, low_byte);
+            // LD r16, d16
+            _ if (opcode & 0b1100_1111) == 0b0000_0001 => {
+                let destination = (opcode & 0b0011_0000) >> 4;
+                let d16 = self.fetch_d16();
 
-                self.b_reg.combine_and_write(&mut self.c_reg, new_val);
+                self.write_r16_pattern(destination, d16);
+            }
+
+            // LD (r16), A
+            _ if (opcode & 0b1100_1111) == 0b0000_0010 => {
+                let destination = (opcode & 0b0011_0000) >> 4;
+                let value = self.a_reg.read();
+
+                self.write_r16mem_pattern(destination, value);
+            }
+
+            // LD A, r16
+            _ if (opcode & 0b1100_1111) == 0b0000_1010 => {
+                let source = (opcode & 0b0011_0000) >> 4;
+                let value = self.read_r16mem_pattern(source);
+                self.a_reg.set(value);
+            }
+
+            // LD (a16), SP
+            0x08 => {
+                let a16 = self.fetch_d16();
+
+                self.write_bus(a16 as usize, (self.sp & 0x00FF) as u8);
+                self.write_bus(a16.wrapping_add(1) as usize, ((self.sp & 0xFF00) >> 8) as u8);
             }
 
             // LD B, d8
@@ -262,7 +304,7 @@ impl Gameboy {
             3 => self.e_reg.read(),
             4 => self.h_reg.read(),
             5 => self.l_reg.read(),
-            6 => todo!(),
+            6 => self.read_bus(self.h_reg.combine_and_read(&self.l_reg) as usize),
             7 => self.a_reg.read(),
             _ => panic!("R8 Byte matching error. Source: {}", source),
         }
@@ -276,9 +318,83 @@ impl Gameboy {
             3 => self.e_reg.set(value),
             4 => self.h_reg.set(value),
             5 => self.l_reg.set(value),
-            6 => todo!(),
+            6 => self.write_bus(self.h_reg.combine_and_read(&self.l_reg) as usize, value),
             7 => self.a_reg.set(value),
-            _ => panic!("R8 byte matching error. Destination: {}", destination),
+            _ => unreachable!("R8 byte matching error. Destination: {}", destination),
+        }
+    }
+
+    fn write_r16_pattern(&mut self, destination: u8, value: u16) {
+        match destination {
+            0 => self.b_reg.combine_and_write(&mut self.c_reg, value), // bc
+            1 => self.d_reg.combine_and_write(&mut self.e_reg, value), // de
+            2 => self.h_reg.combine_and_write(&mut self.l_reg, value), // hl
+            3 => self.sp = value, // sp
+            _ => unreachable!("R16 byte matching error. Destination: {}", destination),
+        }
+    }
+
+    fn read_r16mem_pattern(&mut self, source: u8) -> u8  {
+        match source {
+            0 => self.read_bus(self.b_reg.combine_and_read(&self.c_reg) as usize),
+            1 => self.read_bus(self.d_reg.combine_and_read(&self.e_reg) as usize),
+            2 => {
+                let val = self.read_bus(self.h_reg.combine_and_read(&self.l_reg) as usize);
+                self.h_reg.combine_and_increment(&mut self.l_reg);
+                val
+            },
+            3 => {
+                let val = self.read_bus(self.h_reg.combine_and_read(&self.l_reg) as usize);
+                self.h_reg.combine_and_decrement(&mut self.l_reg);
+                val
+            },
+            _ => unreachable!("R16_MEMORY byte matching error. Source: {}", source),
+        }
+    }
+
+    fn write_r16mem_pattern(&mut self, destination: u8, value: u8) {
+        match destination {
+            0 => self.write_bus(self.b_reg.combine_and_read(&self.c_reg) as usize, value),
+            1 => self.write_bus(self.d_reg.combine_and_read(&self.e_reg) as usize, value),
+            2 => {
+                self.write_bus(self.h_reg.combine_and_read(&self.l_reg) as usize, value);
+                self.h_reg.combine_and_increment(&mut self.l_reg);
+            },
+            3 => {
+                self.write_bus(self.h_reg.combine_and_read(&self.l_reg) as usize, value);
+                self.h_reg.combine_and_decrement(&mut self.l_reg);
+            },
+            _ => unreachable!("R16_MEMORY byte matching error. Destination: {}", destination),
+        }
+    }
+
+    fn read_bus(&self, address: usize) -> u8 {
+        match address {
+            ROM_BANK_0..ROM_BANK_1 => self.rom.data[address - ROM_BANK_0],
+            ROM_BANK_1..VRAM_START => self.rom.data[address - ROM_BANK_0],
+            VRAM_START..EXT_RAM_START => self.vram[address - VRAM_START],
+            EXT_RAM_START..WRAM_1_START => self.rom.external_ram[address - EXT_RAM_START],
+            WRAM_1_START..WRAM_2_START => self.wram_1[address - WRAM_1_START],
+            WRAM_2_START..ECH_RAM_START => self.wram_2[address - WRAM_2_START],
+            ECH_RAM_START..OAM_START => todo!(), // mirror of wram 1
+            OAM_START..UNUSABLE_START => self.oam[address - OAM_START],
+            IO_REGISTERS_START..H_RAM_START => todo!(),
+            H_RAM_START..IE_REGISTER => self.hram[address - H_RAM_START],
+            _ => unreachable!()
+        }
+    }
+
+    fn write_bus(&mut self, address: usize, value: u8) {
+        match address {
+            VRAM_START..EXT_RAM_START => self.vram[address - VRAM_START] = value,
+            EXT_RAM_START..WRAM_1_START => self.rom.external_ram[address - EXT_RAM_START] = value,
+            WRAM_1_START..WRAM_2_START => self.wram_1[address - WRAM_1_START] = value,
+            WRAM_2_START..ECH_RAM_START => self.wram_2[address - WRAM_2_START] = value,
+            ECH_RAM_START..OAM_START => todo!(), // mirror of wram 1
+            OAM_START..UNUSABLE_START => self.oam[address - OAM_START] = value,
+            IO_REGISTERS_START..H_RAM_START => todo!(),
+            H_RAM_START..IE_REGISTER => self.hram[address - H_RAM_START] = value,
+            _ => unreachable!()
         }
     }
 }

@@ -8,8 +8,16 @@ pub trait Register8 {
         other_reg.set((new_val & 0x00FF) as u8);
     }
 
-    fn combine_and_read() -> u16 {
-        todo!()
+    fn combine_and_read(&self, other_reg: &Register) -> u16 {
+        (self.read() as u16) << 8 + other_reg.read()
+    }
+
+    fn combine_and_increment(&mut self, other_reg: &mut Register) {
+        self.combine_and_write(other_reg, self.combine_and_read(other_reg).wrapping_add(1));
+    }
+
+    fn combine_and_decrement(&mut self, other_reg: &mut Register) {
+        self.combine_and_write(other_reg, self.combine_and_read(other_reg).wrapping_sub(1));
     }
 }
 
