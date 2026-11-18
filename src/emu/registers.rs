@@ -32,20 +32,93 @@ impl Register8 for FlagRegister {
 }
 
 impl FlagRegister {
-    pub fn zero_flag(&self) -> bool {
-        (self.f_reg & 0b0100_0000) != 1
+    pub fn flag_reg_set(
+        &mut self,
+        z: impl Into<Option<bool>>,
+        n: impl Into<Option<bool>>,
+        h: impl Into<Option<bool>>,
+        c: impl Into<Option<bool>>,
+    ) {
+        let z = z.into();
+        let n = n.into();
+        let h = h.into();
+        let c = c.into();
+
+        match z {
+            None => {}
+            Some(set) => {
+                self.set_zero_flag(set);
+            }
+        }
+
+        match n {
+            None => {}
+            Some(set) => {
+                self.set_subtraction_flag(set);
+            }
+        }
+
+        match h {
+            None => {}
+            Some(set) => {
+                self.set_half_carry_flag(set);
+            }
+        }
+
+        match c {
+            None => {}
+            Some(set) => {
+                self.set_carry_flag(set);
+            }
+        }
     }
 
-    pub fn subtraction_flag(&self) -> bool {
-        (self.f_reg & 0b1000_0000) != 1
+    pub fn get_zero_flag(&self) -> u8 {
+        (self.f_reg & 0b1000) >> 3
     }
 
-    pub fn half_carry_flag(&self) -> bool {
-        (self.f_reg & 0b0001_0000) != 1
+    pub fn set_zero_flag(&mut self, set: bool) {
+        if set {
+            self.f_reg |= 0b1000
+        } else {
+            self.f_reg &= 0b0111
+        }
     }
 
-    pub fn carry_flag(&self) -> bool {
-        (self.f_reg & 0b0000_1000) != 1
+    pub fn get_subtraction_flag(&self) -> u8 {
+        (self.f_reg & 0b0100) >> 2
+    }
+
+    pub fn set_subtraction_flag(&mut self, set: bool) {
+        if set {
+            self.f_reg |= 0b0100
+        } else {
+            self.f_reg &= 0b1011
+        }
+    }
+
+    pub fn get_half_carry_flag(&self) -> u8 {
+        (self.f_reg & 0b0010) >> 1
+    }
+
+    pub fn set_half_carry_flag(&mut self, set: bool) {
+        if set {
+            self.f_reg |= 0b0010
+        } else {
+            self.f_reg &= 0b1101
+        }
+    }
+
+    pub fn get_carry_flag(&self) -> u8 {
+        self.f_reg & 0b0001
+    }
+
+    pub fn set_carry_flag(&mut self, set: bool) {
+        if set {
+            self.f_reg |= 0b0001
+        } else {
+            self.f_reg &= 0b1110
+        }
     }
 }
 
