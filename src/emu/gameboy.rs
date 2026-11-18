@@ -31,7 +31,7 @@ const IE_REGISTER: usize = 0xFFFF;
 
 pub struct Gameboy {
     // Hardware
-    rom: ROMData,
+    pub rom: ROMData,
     vram: [u8; VRAM_SIZE],
     wram_1: [u8; RAM_SIZE / 2],
     wram_2: [u8; RAM_SIZE / 2],
@@ -48,7 +48,7 @@ pub struct Gameboy {
     l_reg: Register,
     f_reg: FlagRegister,
     sp: u16,
-    pc: u16,
+    pub pc: u16,
 }
 
 impl Gameboy {
@@ -73,6 +73,12 @@ impl Gameboy {
         }
     }
 
+    pub fn tick(&mut self) {
+        let opcode = self.fetch();
+        println!("{}", opcode);
+        self.decode(opcode);
+    }
+
     fn fetch(&mut self) -> u8 {
         let byte = self.read_bus(self.pc as usize);
         self.pc += 1;
@@ -87,9 +93,7 @@ impl Gameboy {
         combine_bytes(high_byte, low_byte)
     }
 
-    fn decode(&mut self) {
-        let opcode = self.fetch();
-
+    fn decode(&mut self, opcode: u8) {
         match opcode {
             // NOP
             0x00 => {}
@@ -123,6 +127,44 @@ impl Gameboy {
 
                 self.write_bus(a16 as usize, (self.sp & 0x00FF) as u8);
                 self.write_bus(a16.wrapping_add(1) as usize, ((self.sp & 0xFF00) >> 8) as u8);
+            }
+
+            // INC r16
+            _ if (opcode & 0b1100_1111) == 0b0000_0011 => {
+                let r16 = opcode >> 4;
+
+                match r16 {
+                    0 => self.b_reg.combine_and_increment(&mut self.c_reg),
+                    1 => self.d_reg.combine_and_increment(&mut self.e_reg),
+                    2 => self.h_reg.combine_and_increment(&mut self.l_reg),
+                    3 => self.sp = self.sp.wrapping_add(1),
+                    _ => unreachable!()
+                }
+            }
+
+            // DEC 16
+            _ if (opcode & 0b1100_1111) == 0b0000_1011 => {
+                let r16 = opcode >> 4;
+
+                match r16 {
+                    0 => self.b_reg.combine_and_decrement(&mut self.c_reg),
+                    1 => self.d_reg.combine_and_decrement(&mut self.e_reg),
+                    2 => self.h_reg.combine_and_decrement(&mut self.l_reg),
+                    3 => self.sp = self.sp.wrapping_sub(1),
+                    _ => unreachable!()
+                }
+            }
+
+            // ADD HL, r16
+            _ if (opcode & 0b1100_1111) == 0b0000_1001 => {
+                let r16 = self.read_r16_pattern(opcode >> 4);
+                let hl = self.h_reg.combine_and_read(&self.l_reg);
+
+                let did_half_carry = ((r16 & 0x00FF) + (hl & 0x00FF)) > 0x00FF;
+                let (result, did_overflow) = r16.overflowing_add(hl);
+
+                self.h_reg.combine_and_write(&mut self.l_reg, result);
+                self.f_reg.flag_reg_set(None, false, did_half_carry, did_overflow);
             }
 
             // LD B, d8
@@ -228,9 +270,7 @@ impl Gameboy {
 
             // JP nn or PC = nn
             0xC3 => {
-                let low_byte = self.fetch();
-                let high_byte = self.fetch();
-                self.pc = combine_bytes(high_byte, low_byte);
+                self.pc = self.fetch_d16();
             }
 
             //LD A, n8
@@ -324,12 +364,22 @@ impl Gameboy {
         }
     }
 
+    fn read_r16_pattern(&mut self, source: u8) -> u16 {
+        match source {
+            0 => self.b_reg.combine_and_read(&self.c_reg),
+            1 => self.d_reg.combine_and_read(&self.e_reg),
+            2 => self.h_reg.combine_and_read(&self.l_reg),
+            3 => self.sp,
+            _ => unreachable!("R16 byte matching error. Source: {}", source),
+        }
+    }
+
     fn write_r16_pattern(&mut self, destination: u8, value: u16) {
         match destination {
-            0 => self.b_reg.combine_and_write(&mut self.c_reg, value), // bc
-            1 => self.d_reg.combine_and_write(&mut self.e_reg, value), // de
-            2 => self.h_reg.combine_and_write(&mut self.l_reg, value), // hl
-            3 => self.sp = value, // sp
+            0 => self.b_reg.combine_and_write(&mut self.c_reg, value),
+            1 => self.d_reg.combine_and_write(&mut self.e_reg, value),
+            2 => self.h_reg.combine_and_write(&mut self.l_reg, value),
+            3 => self.sp = value,
             _ => unreachable!("R16 byte matching error. Destination: {}", destination),
         }
     }

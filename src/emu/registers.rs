@@ -9,7 +9,7 @@ pub trait Register8 {
     }
 
     fn combine_and_read(&self, other_reg: &Register) -> u16 {
-        (self.read() as u16) << 8 + other_reg.read()
+        ((self.read() as u16) << 8) + other_reg.read() as u16
     }
 
     fn combine_and_increment(&mut self, other_reg: &mut Register) {

@@ -1,3 +1,5 @@
+use std::{fs, io::Error};
+
 const EXT_RAM_SIZE: usize = 8192;
 
 pub struct ROMData {
@@ -19,5 +21,11 @@ impl ROMData {
             external_ram: [0; EXT_RAM_SIZE],
             checksum: 0,
         }
+    }
+
+    pub fn load_rom(&mut self, path: String) -> Result<(), Error> {
+        self.data = fs::read(path)?;
+
+        Ok(())
     }
 }
