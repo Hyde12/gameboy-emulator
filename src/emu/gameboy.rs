@@ -167,40 +167,93 @@ impl Gameboy {
                 self.f_reg.flag_reg_set(None, false, did_half_carry, did_overflow);
             }
 
-            // LD B, d8
-            0x06 => {
-                let new_val = self.fetch();
-                self.b_reg.set(new_val)
+            // INC r8
+            _ if (opcode & 0b1100_0111) == 0b0000_0100 => {
+                let r8 = opcode >> 3;
+                self.inc_8_bit(r8);
             }
 
-            // LD C, d8
-            0x0E => {
-                let new_val = self.fetch();
-                self.c_reg.set(new_val)
+            // DEC r8
+            _ if (opcode & 0b1100_0111) == 0b0000_0101 => {
+                let r8 = opcode >> 3;
+                self.dec_8_bit(r8);
             }
 
-            // LD D, d8
-            0x16 => {
-                let new_val = self.fetch();
-                self.d_reg.set(new_val)
+            // LD r8, d8
+            _ if (opcode & 0b1100_0111) == 0b0000_0110 => {
+                let d8 = self.fetch();
+                let r8_dest = opcode >> 3;
+                self.write_r8_pattern(r8_dest, d8);
             }
 
-            // LD E, d8
-            0x1E => {
-                let new_val = self.fetch();
-                self.e_reg.set(new_val)
+            // rlca - cca
+            op if (opcode & 0b1111_0111) == 0b0000_0111 => {
+                match op {
+                    0 => self.rlc_8_bit(7, true),
+                    1 => self.rrc_8_bit(7, true),
+                    2 => self.rl_8_bit(7, true),
+                    3 => self.rr_8_bit(7, true),
+                    4 => { // daa
+                        let result: u8;
+
+                        let a = self.a_reg.read();
+                        let h = self.f_reg.get_half_carry_flag();
+                        let c = self.f_reg.get_carry_flag();
+
+                        let mut adjustment = 0;
+                        if self.f_reg.get_subtraction_flag() == 1 {
+                            if h == 1 { adjustment += 0x06 }
+                            if c == 1 { adjustment += 0x60 }
+                            (result, _, _, _) = self.sub_8_bit(a, adjustment);
+                        } else {
+                            if h == 1 || (a & 0x0F > 0x09) { adjustment += 0x06 }
+                            if c == 1 || (a > 0x99) {
+                                adjustment += 0x60;
+                                self.f_reg.set_carry_flag(true);
+                            } else { self.f_reg.set_carry_flag(false) }
+                            (result, _, _, _) = self.add_8_bit(a, adjustment);
+                        }
+
+                        self.f_reg.flag_reg_set(result == 1, None, false, None);
+                    }
+                    5 => { // cpl
+                        let flipped_a = !self.a_reg.read();
+                        self.a_reg.set(flipped_a);
+                        self.f_reg.flag_reg_set(None, true, true, None);
+                    }
+                    6 => self.f_reg.flag_reg_set(None, false, false, true), // scf
+                    7 => { // ccf
+                        let flipped_c = !self.f_reg.get_carry_flag();
+                        self.f_reg.flag_reg_set(None, false, false, flipped_c == 1);
+                    }
+                    _ => unreachable!()
+                }
             }
 
-            // LD H, d8
-            0x26 => {
-                let new_val = self.fetch();
-                self.h_reg.set(new_val)
+            // JR s8
+            0x18 => self.jr_s8(),
+
+            // JR cc, s8
+            _ if (opcode & 0b1110_0111) == 0b0010_0000 => {
+                let cond = (opcode & 0b0001_1000) >> 3;
+
+                let should_jr = match cond {
+                    0 => { self.f_reg.get_zero_flag() == 0 }
+                    1 => { self.f_reg.get_zero_flag() == 1 }
+                    2 => { self.f_reg.get_carry_flag() == 0 }
+                    3 => { self.f_reg.get_carry_flag() == 1 }
+                    _ => unreachable!(),
+                };
+
+                if should_jr {
+                    self.jr_s8();
+                }
             }
 
-            // LD L, d8
-            0x2E => {
-                let new_val = self.fetch();
-                self.l_reg.set(new_val)
+            // STOP
+            0x10 => {
+                // should prob js implement halt code
+                // todo!()
             }
 
             0x76 => {
@@ -272,12 +325,6 @@ impl Gameboy {
             0xC3 => {
                 self.pc = self.fetch_d16();
             }
-
-            //LD A, n8
-            0x3E => {
-                let new_val = self.fetch();
-                self.a_reg.set(new_val)
-            }
             _ => unimplemented!("Operation code not recognized. Code: {}", opcode),
         }
     }
@@ -285,57 +332,8 @@ impl Gameboy {
 
 }
 
+// PATTERN MATCHING
 impl Gameboy {
-    fn add_8_bit(&self, a: u8, operand: u8) -> (u8, bool, bool, bool) {
-        let (result, did_carry) = a.overflowing_add(operand);
-        let did_half_carry = ((a & 0x0F) + (operand & 0x0F)) > 0x0F;
-
-        (result, false, did_half_carry, did_carry)
-    }
-
-    fn adc_8_bit(&self, a: u8, operand: u8) -> (u8, bool, bool, bool) {
-        let carry_flag = self.f_reg.get_carry_flag();
-
-        let (a_r8, did_overflow_1) = a.overflowing_add(operand);
-        let (a_r8_c, did_overflow_2) = a_r8.overflowing_add(carry_flag);
-
-        let did_half_carry = ((a & 0x0F) + (operand & 0x0F) + carry_flag) > 0x0F;
-        let did_carry = did_overflow_1 || did_overflow_2;
-
-        (a_r8_c, false, did_half_carry, did_carry)
-    }
-
-    fn sub_8_bit(&self, a: u8, operand: u8) -> (u8, bool, bool, bool) {
-        let (result, did_carry) = a.overflowing_sub(operand);
-        let did_half_carry = (operand & 0x0F) > (a & 0x0F);
-
-        (result, true, did_half_carry, did_carry)
-    }
-
-    fn sbc_8_bit(&self, a: u8, operand: u8) -> (u8, bool, bool, bool) {
-        let carry_flag = self.f_reg.get_carry_flag();
-
-        let (a_r8, did_underflow_1) = a.overflowing_sub(operand);
-        let (a_r8_c, did_underflow_2) = a_r8.overflowing_sub(carry_flag);
-
-        let did_half_carry = (operand & 0x0F) + 1 > a & 0x0F;
-        let did_carry = did_underflow_1 || did_underflow_2;
-
-        (a_r8_c, true, did_half_carry, did_carry)
-    }
-
-    fn and_8_bit(&self, a: u8, operand: u8) -> (u8, bool, bool, bool) {
-        (a & operand, false, true, false)
-    }
-
-    fn xor_8_bit(&self, a: u8, operand: u8) -> (u8, bool, bool, bool) {
-        (a ^ operand, false, false, false)
-    }
-
-    fn or_8_bit(&self, a: u8, operand: u8) -> (u8, bool, bool, bool) {
-        (a | operand, false, false, false)
-    }
-
     fn read_r8_pattern(&self, source: u8) -> u8 {
         match source {
             0 => self.b_reg.read(),
@@ -446,5 +444,111 @@ impl Gameboy {
             H_RAM_START..IE_REGISTER => self.hram[address - H_RAM_START] = value,
             _ => unreachable!()
         }
+    }
+}
+
+// ARITHMETIC
+impl Gameboy {
+    fn add_8_bit(&self, r8: u8, operand: u8) -> (u8, bool, bool, bool) {
+        let (result, did_carry) = r8.overflowing_add(operand);
+        let did_half_carry = ((r8 & 0x0F) + (operand & 0x0F)) > 0x0F;
+
+        (result, false, did_half_carry, did_carry)
+    }
+
+    fn adc_8_bit(&self, a: u8, operand: u8) -> (u8, bool, bool, bool) {
+        let carry_flag = self.f_reg.get_carry_flag();
+
+        let (a_r8, did_overflow_1) = a.overflowing_add(operand);
+        let (a_r8_c, did_overflow_2) = a_r8.overflowing_add(carry_flag);
+
+        let did_half_carry = ((a & 0x0F) + (operand & 0x0F) + carry_flag) > 0x0F;
+        let did_carry = did_overflow_1 || did_overflow_2;
+
+        (a_r8_c, false, did_half_carry, did_carry)
+    }
+
+    fn sub_8_bit(&self, a: u8, operand: u8) -> (u8, bool, bool, bool) {
+        let (result, did_carry) = a.overflowing_sub(operand);
+        let did_half_carry = (operand & 0x0F) > (a & 0x0F);
+
+        (result, true, did_half_carry, did_carry)
+    }
+
+    fn sbc_8_bit(&self, a: u8, operand: u8) -> (u8, bool, bool, bool) {
+        let carry_flag = self.f_reg.get_carry_flag();
+
+        let (a_r8, did_underflow_1) = a.overflowing_sub(operand);
+        let (a_r8_c, did_underflow_2) = a_r8.overflowing_sub(carry_flag);
+
+        let did_half_carry = (operand & 0x0F) + 1 > a & 0x0F;
+        let did_carry = did_underflow_1 || did_underflow_2;
+
+        (a_r8_c, true, did_half_carry, did_carry)
+    }
+
+    fn and_8_bit(&self, a: u8, operand: u8) -> (u8, bool, bool, bool) {
+        (a & operand, false, true, false)
+    }
+
+    fn xor_8_bit(&self, a: u8, operand: u8) -> (u8, bool, bool, bool) {
+        (a ^ operand, false, false, false)
+    }
+
+    fn or_8_bit(&self, a: u8, operand: u8) -> (u8, bool, bool, bool) {
+        (a | operand, false, false, false)
+    }
+
+    fn inc_8_bit(&mut self, r8: u8) {
+        let (result, sub_flag, did_half_carry, _) = self.add_8_bit(self.read_r8_pattern(r8), 1);
+        self.write_r8_pattern(r8, result);
+        self.f_reg.flag_reg_set(result == 0, sub_flag, did_half_carry, None);
+    }
+
+    fn dec_8_bit(&mut self, r8: u8) {
+        let (result, sub_flag, did_half_carry, _) = self.sub_8_bit(self.read_r8_pattern(r8), 1);
+        self.write_r8_pattern(r8, result);
+        self.f_reg.flag_reg_set(result == 0, sub_flag, did_half_carry, None);
+    }
+
+    fn rlc_8_bit(&mut self, r8: u8, rlca: bool) {
+        let val = self.read_r8_pattern(r8);
+        let shifted_bit = (val & 0b1000_0000) >> 7;
+        let result = (val << 1) | shifted_bit;
+
+        self.f_reg.flag_reg_set(!rlca && result == 0, false, false, shifted_bit == 1);
+        self.write_r8_pattern(r8, result);
+    }
+
+    fn rrc_8_bit(&mut self, r8: u8, rrca: bool) {
+        let val = self.read_r8_pattern(r8);
+        let shifted_bit = val & 0b0000_0001;
+        let result = (val >> 1) | (shifted_bit << 7);
+
+        self.f_reg.flag_reg_set(!rrca && result == 0, false, false, shifted_bit == 1);
+        self.write_r8_pattern(r8, result);
+    }
+
+    fn rl_8_bit(&mut self, r8: u8, rla: bool) {
+        let val = self.read_r8_pattern(r8);
+        let shifted_bit = (val & 0b1000_0000) >> 7;
+        let result = (val << 1) | self.f_reg.get_carry_flag();
+
+        self.f_reg.flag_reg_set(!rla && result == 0, false, false, shifted_bit == 1);
+        self.write_r8_pattern(r8, result);
+    }
+
+    fn rr_8_bit(&mut self, r8: u8, rra: bool) {
+        let val = self.read_r8_pattern(r8);
+        let shifted_bit = val & 0b0000_0001;
+        let result = (val >> 1) | (self.f_reg.get_carry_flag() << 7);
+
+        self.f_reg.flag_reg_set(!rra && result == 0, false, false, shifted_bit == 1);
+        self.write_r8_pattern(r8, result);
+    }
+
+    fn jr_s8(&mut self) {
+        let s8 = self.fetch() as i8;
+        self.pc = self.pc.wrapping_add_signed(s8 as i16)
     }
 }
