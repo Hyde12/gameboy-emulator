@@ -81,7 +81,7 @@ impl Gameboy {
 
     fn fetch(&mut self) -> u8 {
         let byte = self.read_bus(self.pc as usize);
-        self.pc += 1;
+        self.pc = self.pc.wrapping_add(1);
 
         byte
     }
@@ -137,7 +137,7 @@ impl Gameboy {
                     0 => self.b_reg.combine_and_increment(&mut self.c_reg),
                     1 => self.d_reg.combine_and_increment(&mut self.e_reg),
                     2 => self.h_reg.combine_and_increment(&mut self.l_reg),
-                    3 => self.sp = self.sp.wrapping_add(1),
+                    3 => self.inc_sp(),
                     _ => unreachable!()
                 }
             }
@@ -150,7 +150,7 @@ impl Gameboy {
                     0 => self.b_reg.combine_and_decrement(&mut self.c_reg),
                     1 => self.d_reg.combine_and_decrement(&mut self.e_reg),
                     2 => self.h_reg.combine_and_decrement(&mut self.l_reg),
-                    3 => self.sp = self.sp.wrapping_sub(1),
+                    3 => self.dec_sp(),
                     _ => unreachable!()
                 }
             }
@@ -160,7 +160,7 @@ impl Gameboy {
                 let r16 = self.read_r16_pattern(opcode >> 4);
                 let hl = self.h_reg.combine_and_read(&self.l_reg);
 
-                let did_half_carry = ((r16 & 0x00FF) + (hl & 0x00FF)) > 0x00FF;
+                let did_half_carry = ((r16 & 0x0FFF) + (hl & 0x0FFF)) > 0x0FFF;
                 let (result, did_overflow) = r16.overflowing_add(hl);
 
                 self.h_reg.combine_and_write(&mut self.l_reg, result);
@@ -187,8 +187,8 @@ impl Gameboy {
             }
 
             // rlca - cca
-            op if (opcode & 0b1111_0111) == 0b0000_0111 => {
-                match op {
+            op if (opcode & 0b1100_0111) == 0b0000_0111 => {
+                match op >> 3 {
                     0 => self.rlc_8_bit(7, true),
                     1 => self.rrc_8_bit(7, true),
                     2 => self.rl_8_bit(7, true),
@@ -214,7 +214,7 @@ impl Gameboy {
                             (result, _, _, _) = self.add_8_bit(a, adjustment);
                         }
 
-                        self.f_reg.flag_reg_set(result == 1, None, false, None);
+                        self.f_reg.flag_reg_set(result == 0, None, false, None);
                     }
                     5 => { // cpl
                         let flipped_a = !self.a_reg.read();
@@ -269,7 +269,7 @@ impl Gameboy {
                 self.write_r8_pattern(dest, source_value);
             }
 
-            // 8-bit arithmetic (block 2 opcode)
+            // 8-bit arithmetic (block 2 & 3.1 opcode)
             0x80..=0xBF | _ if (opcode & 0b1100_0110) == 0b1100_0110 => {
                 let arithmetic = (opcode & 0b0011_1000) >> 3;
 
@@ -321,15 +321,54 @@ impl Gameboy {
                     .flag_reg_set(flags.0 == 0, flags.1, flags.2, flags.3);
             }
 
+            // POP r16stk
+            op if (opcode & 0b1100_1111) == 0b1100_0001 => {
+                let stack_1 = self.pop_stack();
+                let stack_2 = self.pop_stack();
+                let d16 = combine_bytes(stack_2, stack_1);
+
+                match (op & 0b0000_0011) >> 4 {
+                    0 => self.b_reg.combine_and_write(&mut self.c_reg, d16),
+                    1 => self.d_reg.combine_and_write(&mut self.e_reg, d16),
+                    2 => self.h_reg.combine_and_write(&mut self.l_reg, d16),
+                    3 => self.a_reg.combine_and_write(&mut self.f_reg, d16),
+                    _ => unreachable!()
+                }
+            }
+
+            op if (opcode & 0b1100_1111) == 0b1100_0101 => {
+                let sp_1 = self.push_stack() as usize;
+                let sp_2 = self.push_stack() as usize;
+
+                match (op & 0b0000_0011) >> 4 {
+                    0 => {
+                        self.write_bus(sp_1, self.b_reg.read());
+                        self.write_bus(sp_2, self.c_reg.read());
+                    },
+                    1 => {
+                        self.write_bus(sp_1, self.d_reg.read());
+                        self.write_bus(sp_2, self.e_reg.read());
+                    },
+                    2 => {
+                        self.write_bus(sp_1, self.h_reg.read());
+                        self.write_bus(sp_2, self.l_reg.read());
+                    },
+                    3 => {
+                        self.write_bus(sp_1, self.a_reg.read());
+                        self.write_bus(sp_2, self.f_reg.read());
+                    },
+                    _ => unreachable!()
+                }
+            }
+
             // JP nn or PC = nn
             0xC3 => {
                 self.pc = self.fetch_d16();
             }
+
             _ => unimplemented!("Operation code not recognized. Code: {}", opcode),
         }
     }
-
-
 }
 
 // PATTERN MATCHING
@@ -414,6 +453,17 @@ impl Gameboy {
             },
             _ => unreachable!("R16_MEMORY byte matching error. Destination: {}", destination),
         }
+    }
+
+    fn pop_stack(&mut self) -> u8 {
+        let val = self.read_bus(self.sp as usize);
+        self.inc_sp();
+        val
+    }
+
+    fn push_stack(&mut self) -> u8 {
+        self.dec_sp();
+        self.read_bus(self.sp as usize)
     }
 
     fn read_bus(&self, address: usize) -> u8 {
@@ -505,10 +555,18 @@ impl Gameboy {
         self.f_reg.flag_reg_set(result == 0, sub_flag, did_half_carry, None);
     }
 
+    fn inc_sp(&mut self) {
+        self.sp = self.sp.wrapping_add(1);
+    }
+
     fn dec_8_bit(&mut self, r8: u8) {
         let (result, sub_flag, did_half_carry, _) = self.sub_8_bit(self.read_r8_pattern(r8), 1);
         self.write_r8_pattern(r8, result);
         self.f_reg.flag_reg_set(result == 0, sub_flag, did_half_carry, None);
+    }
+
+    fn dec_sp(&mut self) {
+        self.sp = self.sp.wrapping_sub(1)
     }
 
     fn rlc_8_bit(&mut self, r8: u8, rlca: bool) {

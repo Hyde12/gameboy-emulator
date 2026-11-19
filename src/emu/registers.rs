@@ -3,7 +3,7 @@ pub trait Register8 {
     fn set(&mut self, value: u8);
     fn read(&self) -> u8;
 
-    fn combine_and_write(&mut self, other_reg: &mut Register, new_val: u16) {
+    fn combine_and_write(&mut self, other_reg: &mut impl Register8, new_val: u16) {
         self.set(((new_val & 0xFF00) >> 8) as u8);
         other_reg.set((new_val & 0x00FF) as u8);
     }
