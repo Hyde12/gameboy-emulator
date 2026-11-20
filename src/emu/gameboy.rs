@@ -1,3 +1,5 @@
+use crate::emu::helpers::flag_conditions;
+
 use super::helpers::{combine_bytes};
 use super::rom::ROMData;
 use super::registers::{FlagRegister, Register, Register8};
@@ -237,15 +239,7 @@ impl Gameboy {
             _ if (opcode & 0b1110_0111) == 0b0010_0000 => {
                 let cond = (opcode & 0b0001_1000) >> 3;
 
-                let should_jr = match cond {
-                    0 => { self.f_reg.get_zero_flag() == 0 }
-                    1 => { self.f_reg.get_zero_flag() == 1 }
-                    2 => { self.f_reg.get_carry_flag() == 0 }
-                    3 => { self.f_reg.get_carry_flag() == 1 }
-                    _ => unreachable!(),
-                };
-
-                if should_jr {
+                if self.check_flag_cond(cond) {
                     self.jr_s8();
                 }
             }
@@ -321,6 +315,63 @@ impl Gameboy {
                     .flag_reg_set(flags.0 == 0, flags.1, flags.2, flags.3);
             }
 
+            // RET cond
+            op if (opcode & 0b1110_0111) == 0b1100_0000 => {
+                let cond = (op >> 3) & 0b0000_0011;
+
+                if self.check_flag_cond(cond) {
+                    self.return_from_subroutine();
+                }
+            }
+
+            // RET
+            0xC9 => self.return_from_subroutine(),
+
+            // RETI
+            0xD9 => self.return_from_subroutine(), // todo, enable interrupt
+
+            // JP cond, d16
+            op if (opcode & 0b1110_0111) == 0b1100_0010 => {
+                let d16 = self.fetch_d16();
+                let cond = (op >> 3) & 0b0000_0011;
+
+                if self.check_flag_cond(cond) {
+                    self.pc = d16;
+                }
+            }
+
+            // JP a16
+            0xC3 => self.pc = self.fetch_d16(),
+
+            // JP HL
+            0xE9 => self.pc = self.h_reg.combine_and_read(&self.l_reg),
+
+            // CALL COND, a16
+            op if (opcode & 0b1110_0111) == 0b1100_0100 => {
+                let cond = (op >> 3) & 0b0000_0011;
+                let call_instr = self.fetch_d16();
+
+                if self.check_flag_cond(cond) {
+                    self.call_a16(call_instr);
+                }
+            }
+
+            // CALL a16
+            0xCD => {
+                let call_instr = self.fetch_d16();
+                self.call_a16(call_instr);
+            }
+
+            // RST tgt3
+            op if (opcode & 0b1100_0111) == 0b1100_0111 => {
+                let tgt3 = (op >> 3) & 0b0000_0111;
+
+                self.push_stack((self.pc >> 8) as u8);
+                self.push_stack((self.pc & 0x00FF) as u8);
+
+                self.pc = (tgt3 as u16) * 8;
+            }
+
             // POP r16stk
             op if (opcode & 0b1100_1111) == 0b1100_0001 => {
                 let stack_1 = self.pop_stack();
@@ -336,36 +387,28 @@ impl Gameboy {
                 }
             }
 
+            // PUSH r16stk
             op if (opcode & 0b1100_1111) == 0b1100_0101 => {
-                let sp_1 = self.push_stack() as usize;
-                let sp_2 = self.push_stack() as usize;
-
                 match (op & 0b0000_0011) >> 4 {
                     0 => {
-                        self.write_bus(sp_1, self.b_reg.read());
-                        self.write_bus(sp_2, self.c_reg.read());
+                        self.push_stack(self.b_reg.read());
+                        self.push_stack(self.c_reg.read());
                     },
                     1 => {
-                        self.write_bus(sp_1, self.d_reg.read());
-                        self.write_bus(sp_2, self.e_reg.read());
+                        self.push_stack(self.d_reg.read());
+                        self.push_stack(self.e_reg.read());
                     },
                     2 => {
-                        self.write_bus(sp_1, self.h_reg.read());
-                        self.write_bus(sp_2, self.l_reg.read());
+                        self.push_stack(self.h_reg.read());
+                        self.push_stack(self.l_reg.read());
                     },
                     3 => {
-                        self.write_bus(sp_1, self.a_reg.read());
-                        self.write_bus(sp_2, self.f_reg.read());
+                        self.push_stack(self.a_reg.read());
+                        self.push_stack(self.f_reg.read());
                     },
                     _ => unreachable!()
                 }
             }
-
-            // JP nn or PC = nn
-            0xC3 => {
-                self.pc = self.fetch_d16();
-            }
-
             _ => unimplemented!("Operation code not recognized. Code: {}", opcode),
         }
     }
@@ -455,15 +498,14 @@ impl Gameboy {
         }
     }
 
-    fn pop_stack(&mut self) -> u8 {
-        let val = self.read_bus(self.sp as usize);
-        self.inc_sp();
-        val
-    }
-
-    fn push_stack(&mut self) -> u8 {
-        self.dec_sp();
-        self.read_bus(self.sp as usize)
+    fn check_flag_cond(&self, cond: u8) -> bool {
+        return match cond {
+            0 => { self.f_reg.get_zero_flag() == 0 }
+            1 => { self.f_reg.get_zero_flag() == 1 }
+            2 => { self.f_reg.get_carry_flag() == 0 }
+            3 => { self.f_reg.get_carry_flag() == 1 }
+            _ => unreachable!(),
+        };
     }
 
     fn read_bus(&self, address: usize) -> u8 {
@@ -568,7 +610,10 @@ impl Gameboy {
     fn dec_sp(&mut self) {
         self.sp = self.sp.wrapping_sub(1)
     }
+}
 
+// MEMORY MAGIC
+impl Gameboy {
     fn rlc_8_bit(&mut self, r8: u8, rlca: bool) {
         let val = self.read_r8_pattern(r8);
         let shifted_bit = (val & 0b1000_0000) >> 7;
@@ -608,5 +653,30 @@ impl Gameboy {
     fn jr_s8(&mut self) {
         let s8 = self.fetch() as i8;
         self.pc = self.pc.wrapping_add_signed(s8 as i16)
+    }
+
+    fn return_from_subroutine(&mut self) {
+        let return_addr_low = self.pop_stack();
+        let return_addr_high = self.pop_stack();
+
+        let return_addr = combine_bytes(return_addr_high, return_addr_low);
+        self.pc = return_addr;
+    }
+
+    fn call_a16(&mut self, call_instr: u16) {
+        self.push_stack((self.pc >> 4) as u8);
+        self.push_stack((self.pc & 0b0000_1111) as u8);
+        self.pc = call_instr;
+    }
+
+    fn pop_stack(&mut self) -> u8 {
+        let val = self.read_bus(self.sp as usize);
+        self.inc_sp();
+        val
+    }
+
+    fn push_stack(&mut self, value: u8) {
+        self.dec_sp();
+        self.write_bus(self.sp as usize, value);
     }
 }
