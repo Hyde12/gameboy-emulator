@@ -82,50 +82,50 @@ impl FlagRegister {
     }
 
     pub fn get_zero_flag(&self) -> u8 {
-        (self.f_reg & 0b1000) >> 3
+        (self.f_reg & 0b1000_0000) >> 7
     }
 
     pub fn set_zero_flag(&mut self, set: bool) {
         if set {
-            self.f_reg |= 0b1000
+            self.f_reg |= 0b1000_0000
         } else {
-            self.f_reg &= 0b0111
+            self.f_reg &= 0b0111_0000
         }
     }
 
     pub fn get_subtraction_flag(&self) -> u8 {
-        (self.f_reg & 0b0100) >> 2
+        (self.f_reg & 0b0100_0000) >> 6
     }
 
     pub fn set_subtraction_flag(&mut self, set: bool) {
         if set {
-            self.f_reg |= 0b0100
+            self.f_reg |= 0b0100_0000
         } else {
-            self.f_reg &= 0b1011
+            self.f_reg &= 0b1011_0000
         }
     }
 
     pub fn get_half_carry_flag(&self) -> u8 {
-        (self.f_reg & 0b0010) >> 1
+        (self.f_reg & 0b0010_0000) >> 5
     }
 
     pub fn set_half_carry_flag(&mut self, set: bool) {
         if set {
-            self.f_reg |= 0b0010
+            self.f_reg |= 0b0010_0000
         } else {
-            self.f_reg &= 0b1101
+            self.f_reg &= 0b1101_0000
         }
     }
 
     pub fn get_carry_flag(&self) -> u8 {
-        self.f_reg & 0b0001
+        (self.f_reg & 0b0001_0000) >> 4
     }
 
     pub fn set_carry_flag(&mut self, set: bool) {
         if set {
-            self.f_reg |= 0b0001
+            self.f_reg |= 0b0001_0000
         } else {
-            self.f_reg &= 0b1110
+            self.f_reg &= 0b1110_0000
         }
     }
 }
