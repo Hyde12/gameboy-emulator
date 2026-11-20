@@ -50,11 +50,17 @@ pub struct Gameboy {
     f_reg: FlagRegister,
     sp: u16,
     pub pc: u16,
+
+    // Hardware Registers
     io_registers: [u8; 128], // temporary
+    ime: u8,
+    interrupt_enable: u8,
+    interrupt_flag: u8,
 
     // Other Flags
-    ime: bool,
-    ie: u8,
+    ei_pending: bool,
+    is_halted: bool,
+    halt_bug: bool,
 }
 
 impl Gameboy {
@@ -76,15 +82,42 @@ impl Gameboy {
             f_reg: FlagRegister::new(0x0),
             pc: ENTRY_POINT as u16,
             sp: 0xFFFE,
-            ime: false,
-            ie: 0x00,
-            io_registers: [0; 128]
+            ime: 0x00,
+            interrupt_enable: 0x00,
+            interrupt_flag: 0x00,
+            io_registers: [0; 128],
+            is_halted: false,
+            halt_bug: false,
+            ei_pending: false,
         }
     }
 
     pub fn tick(&mut self) {
-        let opcode = self.fetch();
-        self.decode(opcode);
+        if self.has_pending_interrupt() {
+            self.is_halted = false;
+
+            if self.ime == 1 {
+                self.call_interrupt_handler();
+            }
+        }
+
+        if !self.is_halted {
+            let opcode = self.fetch();
+
+            let was_pending = self.ei_pending;
+
+            if self.halt_bug {
+                self.halt_bug = false;
+                self.pc -= 1;
+            }
+
+            self.decode(opcode);
+
+            if was_pending && self.ei_pending {
+                self.ime = 1;
+                self.ei_pending = false
+            }
+        }
     }
 
     fn fetch(&mut self) -> u8 {
@@ -255,15 +288,13 @@ impl Gameboy {
                 }
             }
 
-            // STOP
-            0x10 => {
-                // should prob js implement halt code
-                // todo!()
-            }
-
+            // STOP & HALT
             0x76 => {
-                // halt
-                todo!()
+                if self.ime == 0 && self.has_pending_interrupt() {
+                    self.halt_bug = true;
+                } else {
+                    self.is_halted = true;
+                }
             }
 
             // LD r8, r8 (block 1 pandocs)
@@ -340,7 +371,7 @@ impl Gameboy {
 
             // RETI
             0xD9 => {
-                self.ime = true;
+                self.ime = 1;
                 self.return_from_subroutine()
             },
 
@@ -492,6 +523,7 @@ impl Gameboy {
                 }
             }
 
+            // ADD SP, s8 or LD HL, SP+s8
             0xE8 | 0xF8 => {
                 let d8 = self.fetch();
                 let s8 = d8 as i8;
@@ -509,10 +541,14 @@ impl Gameboy {
                 }
             }
 
+            // LD SP, HL
             0xF9 => self.sp = self.h_reg.combine_and_read(&self.l_reg),
 
-            0xF3 => self.ime = false,
-            0xFB => self.ime = true,
+            // DI
+            0xF3 => self.ime = 0,
+
+            // EI
+            0xFB => self.ei_pending = true,
 
             _ => unimplemented!("Operation code not recognized. Code: {}", opcode),
         }
@@ -623,9 +659,12 @@ impl Gameboy {
             WRAM_2_START..ECH_RAM_START => self.wram_2[address - WRAM_2_START],
             ECH_RAM_START..OAM_START => {println!("wtf"); 1}, // mirror of wram 1
             OAM_START..UNUSABLE_START => self.oam[address - OAM_START],
-            IO_REGISTERS_START..H_RAM_START => self.io_registers[address - IO_REGISTERS_START],
+            0xFF0F => self.interrupt_flag,
+            IO_REGISTERS_START..H_RAM_START => {
+                self.io_registers[address - IO_REGISTERS_START]
+            },
             H_RAM_START..IE_REGISTER => self.hram[address - H_RAM_START],
-            IE_REGISTER => self.ie,
+            IE_REGISTER => self.interrupt_enable,
             _ => unreachable!("Invalid memory address. Address: {}", address)
         }
     }
@@ -639,6 +678,7 @@ impl Gameboy {
             WRAM_2_START..ECH_RAM_START => self.wram_2[address - WRAM_2_START] = value,
             ECH_RAM_START..OAM_START => {println!("wtf"); }, // mirror of wram 1
             OAM_START..UNUSABLE_START => self.oam[address - OAM_START] = value,
+            0xFF0F => self.interrupt_flag = value,
             IO_REGISTERS_START..H_RAM_START => {
                 if value == 0x81 && address == 0xFF02 {
                     print!("{}", self.read_bus(0xFF01) as char);
@@ -649,8 +689,24 @@ impl Gameboy {
                 }
             },
             H_RAM_START..IE_REGISTER => self.hram[address - H_RAM_START] = value,
-            IE_REGISTER => self.ie = value,
+            IE_REGISTER => self.interrupt_enable = value,
             _ => unreachable!("Invalid memory address. Address: {}", address)
+        }
+    }
+
+    fn read_io(&self, address: usize) -> u8 {
+        match address {
+            0xFF0F => self.interrupt_flag,
+            IE_REGISTER => self.interrupt_enable,
+            _ => unreachable!("Invalid IO memory address. Address: {}", address)
+        }
+    }
+
+    fn write_io(&mut self, address: usize, value: u8) {
+        match address {
+            0xFF0F => self.interrupt_flag = value,
+            IE_REGISTER => self.interrupt_enable = value,
+            _ => unreachable!("Invalid IO memory address. Address: {}", address)
         }
     }
 }
@@ -828,5 +884,27 @@ impl Gameboy {
     fn push_stack(&mut self, value: u8) {
         self.dec_sp();
         self.write_bus(self.sp as usize, value);
+    }
+}
+
+impl Gameboy {
+    fn call_interrupt_handler(&mut self) {
+        let pending = self.interrupt_enable & self.interrupt_flag;
+        self.ime = 0;
+
+        for n in 0..=4 {
+            if (pending & (0b0000_0001 << n)) > 0 {
+                // 0 - vblank, 1 - lcd, 2 - timer, 3 - serial, 4 - joypad
+                let address = 0x40 + (0x08 * n);
+                self.interrupt_flag = self.interrupt_flag & !(0b0000_0001 << n);
+
+                self.call_a16(address);
+                break;
+            }
+        }
+    }
+
+    fn has_pending_interrupt(&self) -> bool {
+        (self.interrupt_enable & self.interrupt_flag & 0b0001_1111) != 0
     }
 }
