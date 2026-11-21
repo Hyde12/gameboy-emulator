@@ -66,7 +66,6 @@ pub struct Gameboy {
     // Timers
     sysclck: u16,
     io_registers: [u8; 128], // temporary
-    div: u8,
     tima: u8,
     tma: u8,
     tac: u8,
@@ -106,7 +105,6 @@ impl Gameboy {
             interrupt_flag: 0x00,
             io_registers: [0; 128],
             sysclck: 0,
-            div: 0x00,
             tima: 0x00,
             tma: 0x00,
             tac: 0x00,
@@ -123,7 +121,7 @@ impl Gameboy {
 
             if self.ime == 1 {
                 if was_halted {
-                    self.sysclck += 4;
+                    self.t_cycle_add(4);
                 }
                 self.call_interrupt_handler();
                 return;
@@ -147,12 +145,12 @@ impl Gameboy {
                 self.ei_pending = false
             }
         } else {
-            self.sysclck += 4;
+            self.t_cycle_add(4);
         }
     }
 
     fn fetch(&mut self) -> u8 {
-        self.sysclck += 4;
+        self.t_cycle_add(4);
 
         let byte = self.read_bus(self.pc as usize);
         self.pc = self.pc.wrapping_add(1);
@@ -206,7 +204,7 @@ impl Gameboy {
             // INC r16
             _ if (opcode & 0b1100_1111) == 0b0000_0011 => {
                 let r16 = opcode >> 4;
-                self.sysclck += 4;
+                self.t_cycle_add(4);
 
                 match r16 {
                     0 => self.b_reg.combine_and_increment(&mut self.c_reg),
@@ -220,7 +218,7 @@ impl Gameboy {
             // DEC 16
             _ if (opcode & 0b1100_1111) == 0b0000_1011 => {
                 let r16 = opcode >> 4;
-                self.sysclck += 4;
+                self.t_cycle_add(4);
 
                 match r16 {
                     0 => self.b_reg.combine_and_decrement(&mut self.c_reg),
@@ -233,7 +231,7 @@ impl Gameboy {
 
             // ADD HL, r16
             _ if (opcode & 0b1100_1111) == 0b0000_1001 => {
-                self.sysclck += 4;
+                self.t_cycle_add(4);
 
                 let r16 = self.read_r16_pattern(opcode >> 4);
                 let hl = self.h_reg.combine_and_read(&self.l_reg);
@@ -311,7 +309,7 @@ impl Gameboy {
 
             // JR s8
             0x18 => {
-                self.sysclck += 4;
+                self.t_cycle_add(4);
 
                 let s8 = self.fetch() as i8;
                 self.jr_s8(s8);
@@ -323,7 +321,7 @@ impl Gameboy {
                 let cond = (opcode & 0b0001_1000) >> 3;
 
                 if self.check_flag_cond(cond) {
-                    self.sysclck += 4;
+                    self.t_cycle_add(4);
                     self.jr_s8(s8);
                 }
             }
@@ -400,7 +398,7 @@ impl Gameboy {
             // RET cond
             op if (opcode & 0b1110_0111) == 0b1100_0000 => {
                 let cond = (op >> 3) & 0b0000_0011;
-                self.sysclck += 4;
+                self.t_cycle_add(4);
 
                 if self.check_flag_cond(cond) {
                     self.return_from_subroutine();
@@ -422,14 +420,14 @@ impl Gameboy {
                 let cond = (op >> 3) & 0b0000_0011;
 
                 if self.check_flag_cond(cond) {
-                    self.sysclck += 4;
+                    self.t_cycle_add(4);
                     self.pc = d16;
                 }
             }
 
             // JP a16
             0xC3 => {
-                self.sysclck += 4;
+                self.t_cycle_add(4);
                 self.pc = self.fetch_d16()
             },
 
@@ -575,7 +573,7 @@ impl Gameboy {
 
             // ADD SP, s8 or LD HL, SP+s8
             0xE8 | 0xF8 => {
-                self.sysclck += 4;
+                self.t_cycle_add(4);
 
                 let d8 = self.fetch();
                 let s8 = d8 as i8;
@@ -589,14 +587,14 @@ impl Gameboy {
                 if opcode == 0xF8 {
                     self.h_reg.combine_and_write(&mut self.l_reg, result);
                 } else {
-                    self.sysclck += 4;
+                    self.t_cycle_add(4);
                     self.sp = result;
                 }
             }
 
             // LD SP, HL
             0xF9 => {
-                self.sysclck += 4;
+                self.t_cycle_add(4);
 
                 self.sp = self.h_reg.combine_and_read(&self.l_reg)
             },
@@ -710,7 +708,7 @@ impl Gameboy {
     }
 
     fn read_bus(&mut self, address: usize) -> u8 {
-        self.sysclck += 4;
+        self.t_cycle_add(4);
 
         match address {
             ROM_BANK_0..ROM_BANK_1 => self.rom.data[address - ROM_BANK_0],
@@ -734,7 +732,7 @@ impl Gameboy {
     }
 
     fn write_bus(&mut self, address: usize, value: u8) {
-        self.sysclck += 4;
+        self.t_cycle_add(4);
 
         match address {
             ROM_BANK_0..VRAM_START => {println!("wtf"); },
@@ -766,6 +764,10 @@ impl Gameboy {
 
     fn read_io(&self, address: usize) -> u8 {
         match address {
+            DIV => self.get_m_cycles(),
+            TIMA => self.tima,
+            TMA => self.tma,
+            TAC => self.tac,
             INTERRUPT_FLAG => self.interrupt_flag,
             INTERRUPT_ENABLE => self.interrupt_enable,
             _ => unreachable!("Invalid IO memory address. Address: {}", address)
@@ -774,7 +776,10 @@ impl Gameboy {
 
     fn write_io(&mut self, address: usize, value: u8) {
         match address {
-            DIV => self.div = 0,
+            DIV => self.sysclck = 0,
+            TIMA => self.tima = value,
+            TMA => self.tma = value,
+            TAC => self.tac = value,
             INTERRUPT_FLAG => self.interrupt_flag = value,
             INTERRUPT_ENABLE => self.interrupt_enable = value,
             _ => unreachable!("Invalid IO memory address. Address: {}", address)
@@ -935,7 +940,7 @@ impl Gameboy {
     }
 
     fn return_from_subroutine(&mut self) {
-        self.sysclck += 4;
+        self.t_cycle_add(4);
         let return_addr_low = self.pop_stack();
         let return_addr_high = self.pop_stack();
 
@@ -956,7 +961,7 @@ impl Gameboy {
     }
 
     fn push_stack(&mut self, value: u8) {
-        self.sysclck += 2;
+        self.t_cycle_add(2);
         self.dec_sp();
         self.write_bus(self.sp as usize, value);
     }
@@ -971,7 +976,7 @@ impl Gameboy {
         for n in 0..=4 {
             if (pending & (0b0000_0001 << n)) > 0 {
                 // 0 - vblank, 1 - lcd, 2 - timer, 3 - serial, 4 - joypad
-                self.sysclck += 8;
+                self.t_cycle_add(8);
 
                 let address = 0x40 + (0x08 * n);
                 self.interrupt_flag = self.interrupt_flag & !(0b0000_0001 << n);
@@ -983,5 +988,51 @@ impl Gameboy {
 
     fn has_pending_interrupt(&self) -> bool {
         (self.interrupt_enable & self.interrupt_flag & 0b0001_1111) != 0
+    }
+}
+
+// TIMERS
+impl Gameboy {
+    fn get_m_cycles(&self) -> u8 {
+        (self.sysclck >> 8) as u8
+    }
+
+    fn get_tac_controls(&self) -> (bool, u8) {
+        let enabled = (self.tac & 0b0000_0100) > 0;
+        let clock_select = self.tac & 0b0000_0011;
+
+        (enabled, clock_select)
+    }
+
+    fn t_cycle_add(&mut self, val: u16) {
+        let (tac_enabled, clock_select) = self.get_tac_controls();
+
+        if tac_enabled {
+            let bit_mask = match clock_select {
+                0 => 0b00010_0000_0000,
+                1 => 0b0000_1000,
+                2 => 0b0010_0000,
+                3 => 0b1000_0000,
+                _ => unreachable!()
+            };
+
+            for _ in 0..val {
+                let old_clock = self.sysclck;
+                self.sysclck = self.sysclck.wrapping_add(1);
+                let new_clock = self.sysclck;
+
+                if (old_clock & bit_mask) > 0 && (new_clock & bit_mask) == 0 {
+                    let (result, did_overflow) = self.tima.overflowing_add(1);
+                    if did_overflow {
+                        self.tima = self.tma;
+                        self.interrupt_flag = self.interrupt_flag | 0b0000_0100;
+                    } else {
+                        self.tima = result;
+                    }
+                }
+            }
+        } else {
+            self.sysclck = self.sysclck.wrapping_add(val)
+        }
     }
 }

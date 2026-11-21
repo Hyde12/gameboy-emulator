@@ -11,7 +11,7 @@ fn main() {
     // let mut buffer: Vec<u32> = vec![0; WIDTH * HEIGHT];
 
     let mut gameboy = Gameboy::new();
-    let rom_path = String::from("D:/Projects/GameboyEmulator/ROMs/02-interrupts.gb");
+    let rom_path = String::from("D:/Projects/GameboyEmulator/ROMs/instr_timing.gb");
     gameboy.rom.load_rom(rom_path);
 
     loop {
