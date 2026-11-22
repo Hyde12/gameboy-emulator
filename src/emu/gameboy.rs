@@ -40,6 +40,10 @@ const TAC: usize = 0xFF07;
 const INTERRUPT_FLAG: usize = 0xFF0F;
 const INTERRUPT_ENABLE: usize = 0xFFFF;
 
+// Graphics
+const LCDC: usize = 0xFF40;
+const LY: usize = 0xFF44;
+const LYC: usize = 0xFF45;
 
 pub struct Gameboy {
     // // Hardware
@@ -75,6 +79,11 @@ pub struct Gameboy {
     interrupt_enable: u8,
     interrupt_flag: u8,
 
+    // Graphics
+    lcdc: u8,
+    ly: u8,
+    lyc: u8,
+
     // // Other Flags
     ei_pending: bool,
     is_halted: bool,
@@ -108,6 +117,9 @@ impl Gameboy {
             tima: 0x00,
             tma: 0x00,
             tac: 0x00,
+            lcdc: 0x91,
+            ly: 0x91,
+            lyc: 0x00,
             is_halted: false,
             halt_bug: false,
             ei_pending: false,
@@ -150,8 +162,6 @@ impl Gameboy {
     }
 
     fn fetch(&mut self) -> u8 {
-        self.t_cycle_add(4);
-
         let byte = self.read_bus(self.pc as usize);
         self.pc = self.pc.wrapping_add(1);
 
@@ -764,10 +774,16 @@ impl Gameboy {
 
     fn read_io(&self, address: usize) -> u8 {
         match address {
+            // TIMERS
             DIV => self.get_m_cycles(),
             TIMA => self.tima,
             TMA => self.tma,
             TAC => self.tac,
+
+            // GRAPHICS
+            LCDC => self.lcdc,
+
+            // INTERRUPTS
             INTERRUPT_FLAG => self.interrupt_flag,
             INTERRUPT_ENABLE => self.interrupt_enable,
             _ => unreachable!("Invalid IO memory address. Address: {}", address)
@@ -776,10 +792,16 @@ impl Gameboy {
 
     fn write_io(&mut self, address: usize, value: u8) {
         match address {
+            // TIMERS
             DIV => self.sysclck = 0,
             TIMA => self.tima = value,
             TMA => self.tma = value,
             TAC => self.tac = value,
+
+            // GRAPHICS
+            LCDC => self.lcdc = value,
+
+            // INTERRUPTS
             INTERRUPT_FLAG => self.interrupt_flag = value,
             INTERRUPT_ENABLE => self.interrupt_enable = value,
             _ => unreachable!("Invalid IO memory address. Address: {}", address)
@@ -1007,22 +1029,24 @@ impl Gameboy {
     fn t_cycle_add(&mut self, val: u16) {
         let (tac_enabled, clock_select) = self.get_tac_controls();
 
-        if tac_enabled {
-            let bit_mask = match clock_select {
-                0 => 0b00010_0000_0000,
-                1 => 0b0000_1000,
-                2 => 0b0010_0000,
-                3 => 0b1000_0000,
-                _ => unreachable!()
-            };
+        let bit_mask = match clock_select {
+            0 => 0b00010_0000_0000,
+            1 => 0b0000_1000,
+            2 => 0b0010_0000,
+            3 => 0b1000_0000,
+            _ => unreachable!()
+        };
 
-            for _ in 0..val {
-                let old_clock = self.sysclck;
-                self.sysclck = self.sysclck.wrapping_add(1);
+        for _ in 0..val {
+            let old_clock = self.sysclck;
+            self.sysclck = self.sysclck.wrapping_add(1);
+
+            if tac_enabled {
                 let new_clock = self.sysclck;
 
                 if (old_clock & bit_mask) > 0 && (new_clock & bit_mask) == 0 {
                     let (result, did_overflow) = self.tima.overflowing_add(1);
+
                     if did_overflow {
                         self.tima = self.tma;
                         self.interrupt_flag = self.interrupt_flag | 0b0000_0100;
@@ -1031,8 +1055,16 @@ impl Gameboy {
                     }
                 }
             }
-        } else {
-            self.sysclck = self.sysclck.wrapping_add(val)
+        }
+    }
+}
+
+// PPU / Graphics
+impl Gameboy {
+    fn ppu_stuff(&mut self) {
+        let dot = self.sysclck % 456;
+        if dot == 456 {
+            self.ly += 1;
         }
     }
 }
