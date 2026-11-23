@@ -3,9 +3,9 @@ use std::io::{self, Write};
 use crate::emu::gameboy::PPUMode::{Mode0, Mode3};
 use crate::emu::helpers::{pallete_conversion, tile_data_reading};
 
-use super::helpers::{combine_bytes};
-use super::rom::ROMData;
+use super::helpers::combine_bytes;
 use super::registers::{FlagRegister, Register, Register8};
+use super::rom::ROMData;
 
 // // // Specifications
 // // Screen
@@ -45,18 +45,20 @@ const INTERRUPT_ENABLE: usize = 0xFFFF;
 
 // Graphics
 const LCDC: usize = 0xFF40;
-const LY: usize = 0xFF44;
-const LYC: usize = 0xFF45;
+const STAT: usize = 0xFF41;
 const SCY: usize = 0xFF42;
 const SCX: usize = 0xFF43;
-const STAT: usize = 0xFF41;
+const LY: usize = 0xFF44;
+const LYC: usize = 0xFF45;
+const WY: usize = 0xFF4A;
+const WX: usize = 0xFF4B;
 
 #[derive(PartialEq)]
 enum PPUMode {
     Mode0,
     Mode1,
     Mode2,
-    Mode3
+    Mode3,
 }
 
 struct PixelFifo {
@@ -70,6 +72,7 @@ struct PixelFifo {
 struct PPU {
     mode: PPUMode,
     dots: u16,
+    y_condition: bool,
 
     // mode 3
     fifo: PixelFifo,
@@ -119,6 +122,8 @@ pub struct Gameboy {
     lyc: u8,
     scy: u8,
     scx: u8,
+    wy: u8,
+    wx: u8,
 
     // // Other Flags
     ei_pending: bool,
@@ -131,7 +136,19 @@ impl Gameboy {
         Gameboy {
             // hardware
             screen_buffer: [0x00; SCREEN_WIDTH * SCREEN_HEIGHT],
-            ppu: PPU { mode: PPUMode::Mode2, fifo: PixelFifo { pixel_fifo: [0; 16], fetched_tile_data: 0, lx: 0, len: 0, discarded_pixels: 0 }, fetcher_x: 0, dots: 0 },
+            ppu: PPU {
+                mode: PPUMode::Mode2,
+                y_condition: false,
+                fifo: PixelFifo {
+                    pixel_fifo: [0; 16],
+                    fetched_tile_data: 0,
+                    lx: 0,
+                    len: 0,
+                    discarded_pixels: 0,
+                },
+                fetcher_x: 0,
+                dots: 0,
+            },
             rom: ROMData::new(),
             vram: [0; VRAM_SIZE],
             wram_1: [0; RAM_SIZE / 2],
@@ -170,6 +187,8 @@ impl Gameboy {
             lyc: 0x00,
             scy: 0x00,
             scx: 0x00,
+            wy: 0x00,
+            wx: 0x00,
 
             // other flags
             is_halted: false,
@@ -260,7 +279,10 @@ impl Gameboy {
                 let a16 = self.fetch_d16();
 
                 self.write_bus(a16 as usize, (self.sp & 0x00FF) as u8);
-                self.write_bus(a16.wrapping_add(1) as usize, ((self.sp & 0xFF00) >> 8) as u8);
+                self.write_bus(
+                    a16.wrapping_add(1) as usize,
+                    ((self.sp & 0xFF00) >> 8) as u8,
+                );
             }
 
             // INC r16
@@ -273,7 +295,7 @@ impl Gameboy {
                     1 => self.d_reg.combine_and_increment(&mut self.e_reg),
                     2 => self.h_reg.combine_and_increment(&mut self.l_reg),
                     3 => self.inc_sp(),
-                    _ => unreachable!()
+                    _ => unreachable!(),
                 }
             }
 
@@ -287,7 +309,7 @@ impl Gameboy {
                     1 => self.d_reg.combine_and_decrement(&mut self.e_reg),
                     2 => self.h_reg.combine_and_decrement(&mut self.l_reg),
                     3 => self.dec_sp(),
-                    _ => unreachable!("Invalid R16 Pattern. Pattern: {}", r16)
+                    _ => unreachable!("Invalid R16 Pattern. Pattern: {}", r16),
                 }
             }
 
@@ -302,7 +324,8 @@ impl Gameboy {
                 let (result, did_overflow) = r16.overflowing_add(hl);
 
                 self.h_reg.combine_and_write(&mut self.l_reg, result);
-                self.f_reg.flag_reg_set(None, false, did_half_carry, did_overflow);
+                self.f_reg
+                    .flag_reg_set(None, false, did_half_carry, did_overflow);
             }
 
             // INC r8
@@ -331,7 +354,8 @@ impl Gameboy {
                     1 => self.rrc_8_bit(7, true),
                     2 => self.rl_8_bit(7, true),
                     3 => self.rr_8_bit(7, true),
-                    4 => { // daa
+                    4 => {
+                        // daa
                         let result: u8;
 
                         let a = self.a_reg.read();
@@ -341,31 +365,46 @@ impl Gameboy {
                         let mut adjustment = 0;
 
                         if self.f_reg.get_subtraction_flag() == 1 {
-                            if h == 1 { adjustment += 0x06 }
-                            if c == 1 { adjustment += 0x60 }
+                            if h == 1 {
+                                adjustment += 0x06
+                            }
+                            if c == 1 {
+                                adjustment += 0x60
+                            }
                             (result, _, _, _) = self.sub_8_bit(a, adjustment);
                         } else {
-                            if h == 1 || (a & 0x0F > 0x09) { adjustment += 0x06 }
+                            if h == 1 || (a & 0x0F > 0x09) {
+                                adjustment += 0x06
+                            }
                             if c == 1 || (a > 0x99) {
                                 adjustment += 0x60;
                                 self.f_reg.set_carry_flag(true);
-                            } else { self.f_reg.set_carry_flag(false) }
+                            } else {
+                                self.f_reg.set_carry_flag(false)
+                            }
                             (result, _, _, _) = self.add_8_bit(a, adjustment);
                         }
 
                         self.a_reg.set(result);
                         self.f_reg.flag_reg_set(result == 0, None, false, None);
                     }
-                    5 => { // cpl
+                    5 => {
+                        // cpl
                         let flipped_a = !self.a_reg.read();
                         self.a_reg.set(flipped_a);
                         self.f_reg.flag_reg_set(None, true, true, None);
                     }
                     6 => self.f_reg.flag_reg_set(None, false, false, true), // scf
-                    7 => { // ccf
-                        self.f_reg.flag_reg_set(None, false, false, self.f_reg.get_carry_flag() == 0);
+                    7 => {
+                        // ccf
+                        self.f_reg.flag_reg_set(
+                            None,
+                            false,
+                            false,
+                            self.f_reg.get_carry_flag() == 0,
+                        );
                     }
-                    _ => unreachable!("wtf")
+                    _ => unreachable!("wtf"),
                 }
             }
 
@@ -375,7 +414,7 @@ impl Gameboy {
 
                 let s8 = self.fetch() as i8;
                 self.jr_s8(s8);
-            },
+            }
 
             // JR cc, s8
             _ if (opcode & 0b1110_0111) == 0b0010_0000 => {
@@ -412,7 +451,8 @@ impl Gameboy {
                 let a = self.a_reg.read();
                 let operand;
 
-                if opcode & 0b0100_0000 > 0 { // check if value is immediate or not
+                if opcode & 0b0100_0000 > 0 {
+                    // check if value is immediate or not
                     operand = self.fetch();
                 } else {
                     operand = self.read_r8_pattern(opcode & 0b111);
@@ -422,28 +462,36 @@ impl Gameboy {
                 let flags: (u8, bool, bool, bool);
 
                 match arithmetic {
-                    0b000 => { // ADD A, r8
+                    0b000 => {
+                        // ADD A, r8
                         flags = self.add_8_bit(a, operand);
                     }
-                    0b001 => { // ADC A, r8
+                    0b001 => {
+                        // ADC A, r8
                         flags = self.adc_8_bit(a, operand);
                     }
-                    0b010 => { // SUB A, r8
+                    0b010 => {
+                        // SUB A, r8
                         flags = self.sub_8_bit(a, operand);
                     }
-                    0b011 => { // SBC A, r8
+                    0b011 => {
+                        // SBC A, r8
                         flags = self.sbc_8_bit(a, operand)
                     }
-                    0b100 => { // AND A, r8
+                    0b100 => {
+                        // AND A, r8
                         flags = self.and_8_bit(a, operand)
                     }
-                    0b101 => { // XOR A, r8
+                    0b101 => {
+                        // XOR A, r8
                         flags = self.xor_8_bit(a, operand)
                     }
-                    0b110 => { // OR A, r8
+                    0b110 => {
+                        // OR A, r8
                         flags = self.or_8_bit(a, operand)
                     }
-                    0b111 => { // CP A, r8
+                    0b111 => {
+                        // CP A, r8
                         flags = self.sub_8_bit(a, operand)
                     }
                     _ => unreachable!("wtf2"),
@@ -474,7 +522,7 @@ impl Gameboy {
             0xD9 => {
                 self.ime = 1;
                 self.return_from_subroutine()
-            },
+            }
 
             // JP cond, d16
             op if (opcode & 0b1110_0111) == 0b1100_0010 => {
@@ -491,7 +539,7 @@ impl Gameboy {
             0xC3 => {
                 self.t_cycle_add(4);
                 self.pc = self.fetch_d16()
-            },
+            }
 
             // JP HL
             0xE9 => self.pc = self.h_reg.combine_and_read(&self.l_reg),
@@ -533,32 +581,36 @@ impl Gameboy {
                     1 => self.d_reg.combine_and_write(&mut self.e_reg, d16),
                     2 => self.h_reg.combine_and_write(&mut self.l_reg, d16),
                     3 => self.a_reg.combine_and_write(&mut self.f_reg, d16 & 0xFFF0),
-                    _ => unreachable!("Not a valid r16stk pattern. Pattern: {}", (op & 0b0000_0011) >> 4)
+                    _ => unreachable!(
+                        "Not a valid r16stk pattern. Pattern: {}",
+                        (op & 0b0000_0011) >> 4
+                    ),
                 }
             }
 
             // PUSH r16stk
-            op if (opcode & 0b1100_1111) == 0b1100_0101 => {
-                match (op & 0b0011_0000) >> 4 {
-                    0 => {
-                        self.push_stack(self.b_reg.read());
-                        self.push_stack(self.c_reg.read());
-                    },
-                    1 => {
-                        self.push_stack(self.d_reg.read());
-                        self.push_stack(self.e_reg.read());
-                    },
-                    2 => {
-                        self.push_stack(self.h_reg.read());
-                        self.push_stack(self.l_reg.read());
-                    },
-                    3 => {
-                        self.push_stack(self.a_reg.read());
-                        self.push_stack(self.f_reg.read());
-                    },
-                    _ => unreachable!("Not a valid r16stk pattern. Pattern: {}", (op & 0b0000_0011) >> 4)
+            op if (opcode & 0b1100_1111) == 0b1100_0101 => match (op & 0b0011_0000) >> 4 {
+                0 => {
+                    self.push_stack(self.b_reg.read());
+                    self.push_stack(self.c_reg.read());
                 }
-            }
+                1 => {
+                    self.push_stack(self.d_reg.read());
+                    self.push_stack(self.e_reg.read());
+                }
+                2 => {
+                    self.push_stack(self.h_reg.read());
+                    self.push_stack(self.l_reg.read());
+                }
+                3 => {
+                    self.push_stack(self.a_reg.read());
+                    self.push_stack(self.f_reg.read());
+                }
+                _ => unreachable!(
+                    "Not a valid r16stk pattern. Pattern: {}",
+                    (op & 0b0000_0011) >> 4
+                ),
+            },
 
             // PREFIX
             0xCB => {
@@ -580,7 +632,12 @@ impl Gameboy {
 
                         match op >> 6 {
                             1 => {
-                                self.f_reg.flag_reg_set((r8_value >> b3) & 1 != 1, false, true, None);
+                                self.f_reg.flag_reg_set(
+                                    (r8_value >> b3) & 1 != 1,
+                                    false,
+                                    true,
+                                    None,
+                                );
                             }
                             2 => {
                                 self.write_r8_pattern(r8, r8_value & !(1 << b3));
@@ -588,12 +645,10 @@ impl Gameboy {
                             3 => {
                                 self.write_r8_pattern(r8, r8_value | 1 << b3);
                             }
-                            _ => unreachable!()
+                            _ => unreachable!(),
                         }
                     }
                 }
-
-
             }
 
             // LD A, [d8] or LD [d8], A
@@ -644,7 +699,8 @@ impl Gameboy {
                 let did_half_carry = (self.sp & 0x0F) + (s8 as u16 & 0x0F) > 0x0F;
                 let did_carry = (self.sp & 0xFF) + (s8 as u16 & 0xFF) > 0xFF;
 
-                self.f_reg.flag_reg_set(false, false, did_half_carry, did_carry);
+                self.f_reg
+                    .flag_reg_set(false, false, did_half_carry, did_carry);
 
                 if opcode == 0xF8 {
                     self.h_reg.combine_and_write(&mut self.l_reg, result);
@@ -659,13 +715,13 @@ impl Gameboy {
                 self.t_cycle_add(4);
 
                 self.sp = self.h_reg.combine_and_read(&self.l_reg)
-            },
+            }
 
             // DI
             0xF3 => {
                 self.ime = 0;
                 self.ei_pending = false;
-            },
+            }
 
             // EI
             0xFB => self.ei_pending = true,
@@ -725,7 +781,7 @@ impl Gameboy {
         }
     }
 
-    fn read_r16mem_pattern(&mut self, source: u8) -> u8  {
+    fn read_r16mem_pattern(&mut self, source: u8) -> u8 {
         match source {
             0 => self.read_bus(self.b_reg.combine_and_read(&self.c_reg) as usize),
             1 => self.read_bus(self.d_reg.combine_and_read(&self.e_reg) as usize),
@@ -733,12 +789,12 @@ impl Gameboy {
                 let val = self.read_bus(self.h_reg.combine_and_read(&self.l_reg) as usize);
                 self.h_reg.combine_and_increment(&mut self.l_reg);
                 val
-            },
+            }
             3 => {
                 let val = self.read_bus(self.h_reg.combine_and_read(&self.l_reg) as usize);
                 self.h_reg.combine_and_decrement(&mut self.l_reg);
                 val
-            },
+            }
             _ => unreachable!("R16_MEMORY byte matching error. Source: {}", source),
         }
     }
@@ -750,21 +806,24 @@ impl Gameboy {
             2 => {
                 self.write_bus(self.h_reg.combine_and_read(&self.l_reg) as usize, value);
                 self.h_reg.combine_and_increment(&mut self.l_reg);
-            },
+            }
             3 => {
                 self.write_bus(self.h_reg.combine_and_read(&self.l_reg) as usize, value);
                 self.h_reg.combine_and_decrement(&mut self.l_reg);
-            },
-            _ => unreachable!("R16_MEMORY byte matching error. Destination: {}", destination),
+            }
+            _ => unreachable!(
+                "R16_MEMORY byte matching error. Destination: {}",
+                destination
+            ),
         }
     }
 
     fn check_flag_cond(&self, cond: u8) -> bool {
         return match cond {
-            0 => { self.f_reg.get_zero_flag() == 0 }
-            1 => { self.f_reg.get_zero_flag() == 1 }
-            2 => { self.f_reg.get_carry_flag() == 0 }
-            3 => { self.f_reg.get_carry_flag() == 1 }
+            0 => self.f_reg.get_zero_flag() == 0,
+            1 => self.f_reg.get_zero_flag() == 1,
+            2 => self.f_reg.get_carry_flag() == 0,
+            3 => self.f_reg.get_carry_flag() == 1,
             _ => unreachable!("Invalid flag condition. Condition: {}", cond),
         };
     }
@@ -777,12 +836,11 @@ impl Gameboy {
             ROM_BANK_1..VRAM_START => self.rom.data[address - ROM_BANK_0],
             VRAM_START..EXT_RAM_START => {
                 if self.ppu.mode == Mode3 {
-                    return 0xFF
+                    return 0xFF;
                 }
 
                 self.vram[address - VRAM_START]
-            },
-            0xFF00 => 0xFF,
+            }
             EXT_RAM_START..WRAM_1_START => self.rom.external_ram[address - EXT_RAM_START],
             WRAM_1_START..WRAM_2_START => self.wram_1[address - WRAM_1_START],
             WRAM_2_START..ECH_RAM_START => self.wram_2[address - WRAM_2_START],
@@ -794,24 +852,18 @@ impl Gameboy {
                 } else {
                     self.wram_2[addr - WRAM_2_START]
                 }
-            }, // mirror of wram 1
+            }
             OAM_START..UNUSABLE_START => self.oam[address - OAM_START],
             UNUSABLE_START..IO_REGISTERS_START => 0x00,
 
             // TEMP
-            DIV..=TAC => self.read_io(address),
-            LCDC => self.read_io(address),
-            LY => self.read_io(address),
-            LYC => self.read_io(address),
-            SCX => self.read_io(address),
-            SCY => self.read_io(address),
-            STAT => self.read_io(address),
             INTERRUPT_FLAG => self.read_io(address),
             INTERRUPT_ENABLE => self.read_io(address),
-            IO_REGISTERS_START..H_RAM_START => self.io_registers[address - IO_REGISTERS_START],
+            0xFF00 => 0xFF, // temp
+            IO_REGISTERS_START..H_RAM_START => self.read_io(address),
 
             H_RAM_START..INTERRUPT_ENABLE => self.hram[address - H_RAM_START],
-            _ => unreachable!("Invalid memory address. Address: {}", address)
+            _ => unreachable!("Invalid memory address. Address: {}", address),
         }
     }
 
@@ -819,12 +871,14 @@ impl Gameboy {
         self.t_cycle_add(4);
 
         match address {
-            ROM_BANK_0..VRAM_START => {println!("wtf"); },
+            ROM_BANK_0..VRAM_START => {
+                println!("wtf");
+            }
             VRAM_START..EXT_RAM_START => {
                 if self.ppu.mode != Mode3 {
                     self.vram[address - VRAM_START] = value
                 }
-            },
+            }
             EXT_RAM_START..WRAM_1_START => self.rom.external_ram[address - EXT_RAM_START] = value,
             WRAM_1_START..WRAM_2_START => self.wram_1[address - WRAM_1_START] = value,
             WRAM_2_START..ECH_RAM_START => self.wram_2[address - WRAM_2_START] = value,
@@ -836,18 +890,11 @@ impl Gameboy {
                 } else {
                     self.wram_2[addr - WRAM_2_START] = value
                 }
-            },
+            }
             OAM_START..UNUSABLE_START => self.oam[address - OAM_START] = value,
-            UNUSABLE_START..IO_REGISTERS_START => {},
+            UNUSABLE_START..IO_REGISTERS_START => {}
 
             // TEMP
-            STAT => self.write_io(address, value),
-            DIV..=TAC => self.write_io(address, value),
-            LCDC => self.write_io(address, value),
-            LY => self.write_io(address, value),
-            LYC => self.write_io(address, value),
-            SCX => self.write_io(address, value),
-            SCY => self.write_io(address, value),
             INTERRUPT_FLAG => self.write_io(address, value),
             INTERRUPT_ENABLE => self.write_io(address, value),
             IO_REGISTERS_START..H_RAM_START => {
@@ -856,12 +903,12 @@ impl Gameboy {
                     io::stdout().flush().unwrap();
                     self.write_bus(0xFF02, 0);
                 } else {
-                    self.io_registers[address - IO_REGISTERS_START] = value
+                    self.write_io(address, value);
                 }
-            },
+            }
 
             H_RAM_START..INTERRUPT_ENABLE => self.hram[address - H_RAM_START] = value,
-            _ => unreachable!("Invalid memory address. Address: {}", address)
+            _ => unreachable!("Invalid memory address. Address: {}", address),
         }
     }
 
@@ -880,11 +927,14 @@ impl Gameboy {
             LYC => self.lyc,
             SCX => self.scx,
             SCY => self.scy,
+            WY => self.wy,
+            WX => self.wx,
 
             // INTERRUPTS
             INTERRUPT_FLAG => self.interrupt_flag,
             INTERRUPT_ENABLE => self.interrupt_enable,
-            _ => unreachable!("Invalid IO memory address. Address: {}", address)
+            // _ => unreachable!("Invalid IO memory address. Address: {}", address)
+            _ => 0x0,
         }
     }
 
@@ -899,20 +949,23 @@ impl Gameboy {
             // GRAPHICS
             STAT => self.stat = value,
             LCDC => self.lcdc = value,
-            LY => {},
+            LY => {}
             LYC => {
                 self.lyc = value;
                 if (self.stat & 0b0100_0000) > 0 && self.ly == self.lyc {
                     self.interrupt_flag |= 0b0000_0010;
                 }
-            },
+            }
             SCX => self.scx = value,
             SCY => self.scy = value,
+            WY => self.wy = value,
+            WX => self.wx = value,
 
             // INTERRUPTS
             INTERRUPT_FLAG => self.interrupt_flag = value,
             INTERRUPT_ENABLE => self.interrupt_enable = value,
-            _ => unreachable!("Invalid IO memory address. Address: {}", address)
+            // _ => unreachable!("Invalid IO memory address. Address: {}", address)
+            _ => {}
         }
     }
 }
@@ -973,7 +1026,8 @@ impl Gameboy {
         let r8_pattern = self.read_r8_pattern(r8);
         let (result, sub_flag, did_half_carry, _) = self.add_8_bit(r8_pattern, 1);
         self.write_r8_pattern(r8, result);
-        self.f_reg.flag_reg_set(result == 0, sub_flag, did_half_carry, None);
+        self.f_reg
+            .flag_reg_set(result == 0, sub_flag, did_half_carry, None);
     }
 
     fn inc_sp(&mut self) {
@@ -984,7 +1038,8 @@ impl Gameboy {
         let r8_pattern = self.read_r8_pattern(r8);
         let (result, sub_flag, did_half_carry, _) = self.sub_8_bit(r8_pattern, 1);
         self.write_r8_pattern(r8, result);
-        self.f_reg.flag_reg_set(result == 0, sub_flag, did_half_carry, None);
+        self.f_reg
+            .flag_reg_set(result == 0, sub_flag, did_half_carry, None);
     }
 
     fn dec_sp(&mut self) {
@@ -999,7 +1054,8 @@ impl Gameboy {
         let shifted_bit = (val & 0b1000_0000) >> 7;
         let result = (val << 1) | shifted_bit;
 
-        self.f_reg.flag_reg_set(!rlca && result == 0, false, false, shifted_bit == 1);
+        self.f_reg
+            .flag_reg_set(!rlca && result == 0, false, false, shifted_bit == 1);
         self.write_r8_pattern(r8, result);
     }
 
@@ -1008,7 +1064,8 @@ impl Gameboy {
         let shifted_bit = val & 0b0000_0001;
         let result = (val >> 1) | (shifted_bit << 7);
 
-        self.f_reg.flag_reg_set(!rrca && result == 0, false, false, shifted_bit == 1);
+        self.f_reg
+            .flag_reg_set(!rrca && result == 0, false, false, shifted_bit == 1);
         self.write_r8_pattern(r8, result);
     }
 
@@ -1017,7 +1074,8 @@ impl Gameboy {
         let shifted_bit = (val & 0b1000_0000) >> 7;
         let result = (val << 1) | self.f_reg.get_carry_flag();
 
-        self.f_reg.flag_reg_set(!rla && result == 0, false, false, shifted_bit == 1);
+        self.f_reg
+            .flag_reg_set(!rla && result == 0, false, false, shifted_bit == 1);
         self.write_r8_pattern(r8, result);
     }
 
@@ -1026,7 +1084,8 @@ impl Gameboy {
         let shifted_bit = val & 0b0000_0001;
         let result = (val >> 1) | (self.f_reg.get_carry_flag() << 7);
 
-        self.f_reg.flag_reg_set(!rra && result == 0, false, false, shifted_bit == 1);
+        self.f_reg
+            .flag_reg_set(!rra && result == 0, false, false, shifted_bit == 1);
         self.write_r8_pattern(r8, result);
     }
 
@@ -1035,7 +1094,8 @@ impl Gameboy {
         let shifted_bit = (val & 0b1000_0000) >> 7;
         let result = val << 1;
 
-        self.f_reg.flag_reg_set(result == 0, false, false, shifted_bit == 1);
+        self.f_reg
+            .flag_reg_set(result == 0, false, false, shifted_bit == 1);
         self.write_r8_pattern(r8, result);
     }
 
@@ -1044,7 +1104,8 @@ impl Gameboy {
         let shifted_bit = val & 0b0000_0001;
         let result = (val >> 1) | (val & (0b1000_0000));
 
-        self.f_reg.flag_reg_set(result == 0, false, false, shifted_bit == 1);
+        self.f_reg
+            .flag_reg_set(result == 0, false, false, shifted_bit == 1);
         self.write_r8_pattern(r8, result);
     }
 
@@ -1053,7 +1114,8 @@ impl Gameboy {
         let shifted_bit = val & 0b0000_0001;
         let result = val >> 1;
 
-        self.f_reg.flag_reg_set(result == 0, false, false, shifted_bit == 1);
+        self.f_reg
+            .flag_reg_set(result == 0, false, false, shifted_bit == 1);
         self.write_r8_pattern(r8, result);
     }
 
@@ -1078,7 +1140,8 @@ impl Gameboy {
         self.pc = return_addr;
     }
 
-    fn call_a16(&mut self, call_instr: u16) { // 12 T - Cycles
+    fn call_a16(&mut self, call_instr: u16) {
+        // 12 T - Cycles
         self.push_stack((self.pc >> 8) as u8);
         self.push_stack((self.pc & 0x00FF) as u8);
         self.pc = call_instr;
@@ -1142,7 +1205,7 @@ impl Gameboy {
             1 => 0b0000_1000,
             2 => 0b0010_0000,
             3 => 0b1000_0000,
-            _ => unreachable!()
+            _ => unreachable!(),
         };
 
         for _ in 0..val {
@@ -1171,19 +1234,31 @@ impl Gameboy {
 // PPU / Graphics
 impl Gameboy {
     fn tile_fetch(&self) -> u16 {
-        let bg_tile_map_base: u16 = if (self.lcdc & 0b0000_1000) >> 3 == 1 {0x9C00} else {0x9800};
-        let (tile_data_area, signed_address) = if (self.lcdc & 0b0001_0000) >> 4 == 1 {(0x8000 as u16, false)} else {(0x9000 as u16, true)};
+        let bg_tile_map_base: u16 = if (self.lcdc & 0b0000_1000) >> 3 == 1 {
+            0x9C00
+        } else {
+            0x9800
+        };
+        let (tile_data_area, signed_address) = if (self.lcdc & 0b0001_0000) >> 4 == 1 {
+            (0x8000 as u16, false)
+        } else {
+            (0x9000 as u16, true)
+        };
 
         let tilemap_x: u16 = ((self.scx as u16 / 8) + self.ppu.fetcher_x as u16) & 0x1F;
         let tilemap_y: u16 = ((self.ly.wrapping_add(self.scy)) & 0xFF) as u16;
 
-        let tilemap_id = self.vram[(bg_tile_map_base + ((tilemap_y / 8) * 32) + tilemap_x) as usize - VRAM_START];
+        let tilemap_id = self.vram
+            [(bg_tile_map_base + ((tilemap_y / 8) * 32) + tilemap_x) as usize - VRAM_START];
 
         let tile_data_addr;
         if signed_address {
-            tile_data_addr = tile_data_area.wrapping_add_signed(tilemap_id as i8 as i16 * 16) as usize - VRAM_START;
+            tile_data_addr = tile_data_area.wrapping_add_signed(tilemap_id as i8 as i16 * 16)
+                as usize
+                - VRAM_START;
         } else {
-            tile_data_addr = tile_data_area.wrapping_add(tilemap_id as u16 * 16) as usize - VRAM_START;
+            tile_data_addr =
+                tile_data_area.wrapping_add(tilemap_id as u16 * 16) as usize - VRAM_START;
         }
 
         let tile_offset = (((self.ly.wrapping_add(self.scy)) % 8) * 2) as usize;
@@ -1200,7 +1275,7 @@ impl Gameboy {
             PPUMode::Mode0 => (self.stat & 0b0000_1000) > 0,
             PPUMode::Mode1 => (self.stat & 0b0001_0000) > 0,
             PPUMode::Mode2 => (self.stat & 0b0010_0000) > 0,
-            _ => false
+            _ => false,
         };
 
         let mode_bits = match self.ppu.mode {
@@ -1222,7 +1297,13 @@ impl Gameboy {
             self.ly = 0;
             self.ppu.fetcher_x = 0;
             self.enter_mode(PPUMode::Mode0);
-            self.ppu.fifo = PixelFifo { pixel_fifo: [0; 16], fetched_tile_data: 0, lx: 0, len: 0, discarded_pixels: 0 };
+            self.ppu.fifo = PixelFifo {
+                pixel_fifo: [0; 16],
+                fetched_tile_data: 0,
+                lx: 0,
+                len: 0,
+                discarded_pixels: 0,
+            };
             return;
         }
 
@@ -1234,9 +1315,7 @@ impl Gameboy {
                 self.ppu.fifo.discarded_pixels = self.scx % 8;
                 self.ppu.fetcher_x = 0;
             }
-        }
-
-        if self.ppu.mode == PPUMode::Mode3 {
+        } else if self.ppu.mode == PPUMode::Mode3 {
             // Mode 3
             if self.ppu.fifo.len <= 8 {
                 let fifo_len = self.ppu.fifo.len;
@@ -1244,19 +1323,23 @@ impl Gameboy {
                     let tile = self.tile_fetch();
                     self.ppu.fetcher_x += 1;
 
-                    for (i, n) in (fifo_len..fifo_len+8).enumerate() {
-                        self.ppu.fifo.pixel_fifo[n as usize] = ((tile >> (16 - ((i + 1) * 2))) & 0b11) as u8;
+                    for (i, n) in (fifo_len..fifo_len + 8).enumerate() {
+                        self.ppu.fifo.pixel_fifo[n as usize] =
+                            ((tile >> (16 - ((i + 1) * 2))) & 0b11) as u8;
                     }
 
                     self.ppu.fifo.len += 8;
                 }
             }
+
             if self.ppu.fifo.len > 8 {
                 if self.ppu.fifo.discarded_pixels > 0 {
                     self.ppu.fifo.discarded_pixels -= 1;
                 } else {
                     // push
-                    self.screen_buffer[(self.ppu.fifo.lx) as usize + (self.ly as usize * SCREEN_WIDTH)] = pallete_conversion(self.ppu.fifo.pixel_fifo[0]);
+                    self.screen_buffer
+                        [(self.ppu.fifo.lx) as usize + (self.ly as usize * SCREEN_WIDTH)] =
+                        pallete_conversion(self.ppu.fifo.pixel_fifo[0]);
                     self.ppu.fifo.lx += 1;
                 }
                 self.ppu.fifo.pixel_fifo.copy_within(1.., 0);
@@ -1266,18 +1349,27 @@ impl Gameboy {
                     self.enter_mode(PPUMode::Mode0);
 
                     self.ppu.fetcher_x = 0;
-                    self.ppu.fifo = PixelFifo { pixel_fifo: [0; 16], fetched_tile_data: 0, lx: 0, len: 0, discarded_pixels: 0 }
+                    self.ppu.fifo = PixelFifo {
+                        pixel_fifo: [0; 16],
+                        fetched_tile_data: 0,
+                        lx: 0,
+                        len: 0,
+                        discarded_pixels: 0,
+                    }
                 }
             }
-        } else {
-
         }
 
+        // End of Scanline
         if self.ppu.dots == 456 {
             if self.ppu.mode == PPUMode::Mode1 && self.ly == 0 {
                 self.enter_mode(PPUMode::Mode2);
             } else {
                 self.ly += 1;
+            }
+
+            if self.wy == self.ly {
+                self.ppu.y_condition = true;
             }
 
             if (self.stat & 0b0100_0000) > 0 && self.ly == self.lyc {
@@ -1290,6 +1382,7 @@ impl Gameboy {
             if self.ly == 144 {
                 self.interrupt_flag |= 0b0000_0001;
                 self.enter_mode(PPUMode::Mode1);
+                self.ppu.y_condition = false;
             } else if self.ly == 153 {
                 self.ly = 0;
             } else if self.ly < 144 {
