@@ -93,6 +93,7 @@ impl Gameboy {
             self.enter_mode(PPUMode::Mode0);
             self.ppu.window_y = 0;
             self.ppu.fifo = PixelFifo {
+                object_pixel_fifo: [0; 16],
                 pixel_fifo: [0; 16],
                 window_triggered: false,
                 lx: 0,
@@ -106,6 +107,30 @@ impl Gameboy {
         self.ppu.dots += 1;
 
         if self.ppu.mode == PPUMode::Mode2 {
+            if self.ppu.dots % 2 == 1 {
+                if self.ppu.object_count < 10 {
+                    let object_height = if self.lcdc & 0b0000_0100 == 0 { 8 } else { 16 };
+                    let object_addr = (self.ppu.dots as usize - 1) / 2 * 4;
+                    let ly = self.ly as i16;
+
+                    let oam_y = self.oam[object_addr] as i16 - 16;
+                    let oam_x = self.oam[object_addr + 1];
+                    let tile_index = self.oam[object_addr + 2];
+                    let attributes = self.oam[object_addr + 3];
+
+                    if ly >= oam_y && ly < oam_y + object_height {
+                        let oam_buffer_addr = self.ppu.object_count as usize * 4;
+
+                        self.ppu.oam_buffer[oam_buffer_addr] = (oam_y + 16) as u8;
+                        self.ppu.oam_buffer[oam_buffer_addr + 1] = oam_x as u8;
+                        self.ppu.oam_buffer[oam_buffer_addr + 2] = tile_index;
+                        self.ppu.oam_buffer[oam_buffer_addr + 3] = attributes;
+
+                        self.ppu.object_count += 1;
+                    }
+                }
+            }
+
             // go to mode 3 after oam stuff
             if self.ppu.dots == 80 {
                 // check if it's a window line and activate if true
@@ -126,6 +151,7 @@ impl Gameboy {
             {
                 self.ppu.fetcher_x = 0;
                 self.ppu.fifo = PixelFifo {
+                    object_pixel_fifo: [0; 16],
                     pixel_fifo: [0; 16],
                     window_triggered: true,
                     lx: self.ppu.fifo.lx,
@@ -139,26 +165,53 @@ impl Gameboy {
                 }
             }
 
-            // if the fifo doesnt have enough pixels to push get more
-            if self.ppu.fifo.len <= 8 {
-                let fifo_len = self.ppu.fifo.len;
-                let tile = self.tile_fetch();
+            // fetch a tile if the fifo doesnt have enough pixels to push
+            if self.ppu.penalty == 0 {
+                if self.ppu.fifo.len <= 8 {
+                    let fifo_len = self.ppu.fifo.len;
+                    let tile = self.tile_fetch();
 
-                // for each tile fetched by our fetcher
-                self.ppu.fetcher_x += 1;
+                    // for each tile fetched by our fetcher
+                    self.ppu.fetcher_x += 1;
 
-                // put the pixels in the fifo
-                for (i, n) in (fifo_len..fifo_len + 8).enumerate() {
-                    self.ppu.fifo.pixel_fifo[n as usize] =
-                        ((tile >> (16 - ((i + 1) * 2))) & 0b11) as u8;
+                    // put the pixels in the fifo
+                    for (i, n) in (fifo_len..fifo_len + 8).enumerate() {
+                        self.ppu.fifo.pixel_fifo[n as usize] =
+                            ((tile >> (16 - ((i + 1) * 2))) & 0b11) as u8;
+                    }
+
+                    // as we got 8 more pixels from this fetching operation
+                    self.ppu.fifo.len += 8;
+                    self.ppu.penalty += if fifo_len == 0 { 6 } else { 5 };
                 }
-
-                // as we got 8 more pixels from this fetching operation
-                self.ppu.fifo.len += 8;
+            } else {
+                self.ppu.penalty -= 1;
             }
 
             // if fifo has enough pixels
             if self.ppu.fifo.len > 8 {
+                for n in 0..self.ppu.object_count {
+                    let object_addr = n as usize * 4;
+                    if self.ppu.oam_buffer[object_addr + 1] == self.ppu.fifo.lx {
+                        let is_tall = self.lcdc & 0b0000_0100 != 0;
+                        let sprite_y = self.ppu.oam_buffer[object_addr];
+                        let tile_index = self.ppu.oam_buffer[object_addr + 2];
+
+                        if is_tall {
+                        } else {
+                            let row = self.ly - (sprite_y - 16);
+                            let tile_addr = self.vram[tile_index as usize * 16];
+
+                            let tile = self.vram[(0x8000
+                                + tile_addr as usize
+                                + (row as usize * 8)
+                                + (self.ppu.fifo.lx as usize
+                                    - self.ppu.oam_buffer[object_addr + 1] as usize))
+                                - VRAM_START];
+                        }
+                    }
+                }
+
                 // dont push the pixels if they are to be discarded
                 if self.ppu.fifo.discarded_pixels > 0 {
                     self.ppu.fifo.discarded_pixels -= 1;
@@ -183,6 +236,8 @@ impl Gameboy {
                     // go to the next mode, reset everything
                     self.enter_mode(PPUMode::Mode0);
                     self.ppu.fetcher_x = 0;
+                    self.ppu.object_count = 0;
+                    self.ppu.fifo.object_pixel_fifo = [0; 16];
 
                     // if the window y was triggered increment it
                     if self.ppu.fifo.window_triggered {
@@ -191,6 +246,7 @@ impl Gameboy {
 
                     // reset fifo
                     self.ppu.fifo = PixelFifo {
+                        object_pixel_fifo: [0; 16],
                         pixel_fifo: [0; 16],
                         window_triggered: false,
                         lx: 0,

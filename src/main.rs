@@ -8,8 +8,6 @@ const WIDTH: usize = 160;
 const HEIGHT: usize = 144;
 
 fn main() {
-    // let mut buffer: Vec<u32> = vec![0; WIDTH * HEIGHT];
-
     let mut gameboy = Gameboy::new();
     let rom_path = String::from("D:/Projects/GameboyEmulator/ROMs/dmg-acid2.gb");
     gameboy.rom.load_rom(rom_path);

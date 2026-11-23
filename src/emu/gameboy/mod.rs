@@ -67,6 +67,7 @@ enum PPUMode {
 
 struct PixelFifo {
     pixel_fifo: [u8; 16],
+    object_pixel_fifo: [u8; 16],
     window_triggered: bool,
 
     lx: u8,
@@ -75,12 +76,17 @@ struct PixelFifo {
 }
 
 struct PPU {
-    mode: PPUMode,
     dots: u16,
-    window_y_condition: bool,
-    window_y: u8,
+    mode: PPUMode,
+    penalty: u8,
+
+    // mode 2
+    oam_buffer: [u8; 40],
+    object_count: u8,
 
     // mode 3
+    window_y_condition: bool,
+    window_y: u8,
     fifo: PixelFifo,
     fetcher_x: u8,
 }
@@ -145,13 +151,17 @@ impl Gameboy {
                 mode: PPUMode::Mode2,
                 window_y_condition: false,
                 window_y: 0,
+                penalty: 0,
                 fifo: PixelFifo {
+                    object_pixel_fifo: [0; 16],
                     pixel_fifo: [0; 16],
                     window_triggered: false,
                     lx: 0,
                     len: 0,
                     discarded_pixels: 0,
                 },
+                oam_buffer: [0; 40],
+                object_count: 0,
                 fetcher_x: 0,
                 dots: 0,
             },
