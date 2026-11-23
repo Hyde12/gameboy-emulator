@@ -11,9 +11,8 @@ fn main() {
     // let mut buffer: Vec<u32> = vec![0; WIDTH * HEIGHT];
 
     let mut gameboy = Gameboy::new();
-    let rom_path = String::from("D:/Projects/GameboyEmulator/ROMs/tetris.gb");
+    let rom_path = String::from("D:/Projects/GameboyEmulator/ROMs/dmg-acid2.gb");
     gameboy.rom.load_rom(rom_path);
-
 
     // TODO: Actual Options Menu
     let mut window_options = WindowOptions::default();
@@ -30,6 +29,8 @@ fn main() {
             gameboy.tick();
         }
 
-        window.update_with_buffer(&gameboy.screen_buffer, WIDTH, HEIGHT).unwrap();
+        window
+            .update_with_buffer(&gameboy.screen_buffer, WIDTH, HEIGHT)
+            .unwrap();
     }
 }
