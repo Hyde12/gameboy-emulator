@@ -11,29 +11,25 @@ fn main() {
     // let mut buffer: Vec<u32> = vec![0; WIDTH * HEIGHT];
 
     let mut gameboy = Gameboy::new();
-    let rom_path = String::from("D:/Projects/GameboyEmulator/ROMs/instr_timing.gb");
+    let rom_path = String::from("D:/Projects/GameboyEmulator/ROMs/tetris.gb");
     gameboy.rom.load_rom(rom_path);
-
-    loop {
-        gameboy.tick();
-    }
 
 
     // TODO: Actual Options Menu
-    // let mut window_options = WindowOptions::default();
-    // window_options.scale = minifb::Scale::X4;
+    let mut window_options = WindowOptions::default();
+    window_options.scale = minifb::Scale::X4;
 
-    // let mut window = Window::new("Gameboy", WIDTH, HEIGHT, window_options).unwrap_or_else(|e| {
-    //     panic!("{}", e);
-    // });
+    let mut window = Window::new("Gameboy", WIDTH, HEIGHT, window_options).unwrap_or_else(|e| {
+        panic!("{}", e);
+    });
 
-    // window.set_target_fps(60);
-    // print!("dasd");
-    // while window.is_open() && !window.is_key_down(Key::Escape) {
-    //     for _ in 0..17_500 {
-    //         gameboy.tick();
-    //     }
+    window.set_target_fps(60);
 
-    //     window.update_with_buffer(&buffer, WIDTH, HEIGHT).unwrap();
-    // }
+    while window.is_open() && !window.is_key_down(Key::Escape) {
+        for _ in 0..17_500 {
+            gameboy.tick();
+        }
+
+        window.update_with_buffer(&gameboy.screen_buffer, WIDTH, HEIGHT).unwrap();
+    }
 }

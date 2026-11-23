@@ -1,5 +1,8 @@
 use std::io::{self, Write};
 
+use crate::emu::gameboy::PPUMode::{Mode0, Mode3};
+use crate::emu::helpers::{pallete_conversion, tile_data_reading};
+
 use super::helpers::{combine_bytes};
 use super::rom::ROMData;
 use super::registers::{FlagRegister, Register, Register8};
@@ -13,7 +16,7 @@ const SCREEN_HEIGHT: usize = 144;
 const RAM_SIZE: usize = 8192;
 const VRAM_SIZE: usize = 8192;
 const HRAM_SIZE: usize = 127;
-const OAM_SIZE: usize = 40;
+const OAM_SIZE: usize = 160;
 
 // // Memory Pointers
 const ENTRY_POINT: usize = 0x0100;
@@ -44,10 +47,40 @@ const INTERRUPT_ENABLE: usize = 0xFFFF;
 const LCDC: usize = 0xFF40;
 const LY: usize = 0xFF44;
 const LYC: usize = 0xFF45;
+const SCY: usize = 0xFF42;
+const SCX: usize = 0xFF43;
+const STAT: usize = 0xFF41;
+
+#[derive(PartialEq)]
+enum PPUMode {
+    Mode0,
+    Mode1,
+    Mode2,
+    Mode3
+}
+
+struct PixelFifo {
+    pixel_fifo: [u8; 16],
+    fetched_tile_data: u16,
+    lx: u8,
+    len: u8,
+    discarded_pixels: u8,
+}
+
+struct PPU {
+    mode: PPUMode,
+    dots: u16,
+
+    // mode 3
+    fifo: PixelFifo,
+    fetcher_x: u8,
+}
 
 pub struct Gameboy {
     // // Hardware
     pub rom: ROMData,
+    pub screen_buffer: [u32; SCREEN_WIDTH * SCREEN_HEIGHT],
+    ppu: PPU,
     vram: [u8; VRAM_SIZE],
     wram_1: [u8; RAM_SIZE / 2],
     wram_2: [u8; RAM_SIZE / 2],
@@ -78,11 +111,14 @@ pub struct Gameboy {
     ime: u8,
     interrupt_enable: u8,
     interrupt_flag: u8,
+    stat: u8,
 
     // Graphics
     lcdc: u8,
     ly: u8,
     lyc: u8,
+    scy: u8,
+    scx: u8,
 
     // // Other Flags
     ei_pending: bool,
@@ -93,12 +129,17 @@ pub struct Gameboy {
 impl Gameboy {
     pub fn new() -> Self {
         Gameboy {
+            // hardware
+            screen_buffer: [0x00; SCREEN_WIDTH * SCREEN_HEIGHT],
+            ppu: PPU { mode: PPUMode::Mode2, fifo: PixelFifo { pixel_fifo: [0; 16], fetched_tile_data: 0, lx: 0, len: 0, discarded_pixels: 0 }, fetcher_x: 0, dots: 0 },
             rom: ROMData::new(),
             vram: [0; VRAM_SIZE],
             wram_1: [0; RAM_SIZE / 2],
             wram_2: [0; RAM_SIZE / 2],
             oam: [0; OAM_SIZE],
             hram: [0; HRAM_SIZE],
+
+            // registers
             a_reg: Register::new(0x01),
             b_reg: Register::new(0xFF),
             c_reg: Register::new(0x13),
@@ -109,17 +150,28 @@ impl Gameboy {
             f_reg: FlagRegister::new(0x0),
             pc: ENTRY_POINT as u16,
             sp: 0xFFFE,
+
+            // interrupts
             ime: 0x00,
             interrupt_enable: 0x00,
             interrupt_flag: 0x00,
             io_registers: [0; 128],
+
+            // timing
             sysclck: 0,
             tima: 0x00,
             tma: 0x00,
             tac: 0x00,
+            stat: 0x81,
+
+            // graphics
             lcdc: 0x91,
-            ly: 0x91,
+            ly: 0x00,
             lyc: 0x00,
+            scy: 0x00,
+            scx: 0x00,
+
+            // other flags
             is_halted: false,
             halt_bug: false,
             ei_pending: false,
@@ -723,15 +775,37 @@ impl Gameboy {
         match address {
             ROM_BANK_0..ROM_BANK_1 => self.rom.data[address - ROM_BANK_0],
             ROM_BANK_1..VRAM_START => self.rom.data[address - ROM_BANK_0],
-            VRAM_START..EXT_RAM_START => self.vram[address - VRAM_START],
+            VRAM_START..EXT_RAM_START => {
+                if self.ppu.mode == Mode3 {
+                    return 0xFF
+                }
+
+                self.vram[address - VRAM_START]
+            },
+            0xFF00 => 0xFF,
             EXT_RAM_START..WRAM_1_START => self.rom.external_ram[address - EXT_RAM_START],
             WRAM_1_START..WRAM_2_START => self.wram_1[address - WRAM_1_START],
             WRAM_2_START..ECH_RAM_START => self.wram_2[address - WRAM_2_START],
-            ECH_RAM_START..OAM_START => {println!("wtf"); 1}, // mirror of wram 1
+            ECH_RAM_START..OAM_START => {
+                let addr = address - 0x2000;
+
+                if addr < WRAM_2_START {
+                    self.wram_1[addr - WRAM_1_START]
+                } else {
+                    self.wram_2[addr - WRAM_2_START]
+                }
+            }, // mirror of wram 1
             OAM_START..UNUSABLE_START => self.oam[address - OAM_START],
+            UNUSABLE_START..IO_REGISTERS_START => 0x00,
 
             // TEMP
             DIV..=TAC => self.read_io(address),
+            LCDC => self.read_io(address),
+            LY => self.read_io(address),
+            LYC => self.read_io(address),
+            SCX => self.read_io(address),
+            SCY => self.read_io(address),
+            STAT => self.read_io(address),
             INTERRUPT_FLAG => self.read_io(address),
             INTERRUPT_ENABLE => self.read_io(address),
             IO_REGISTERS_START..H_RAM_START => self.io_registers[address - IO_REGISTERS_START],
@@ -746,15 +820,34 @@ impl Gameboy {
 
         match address {
             ROM_BANK_0..VRAM_START => {println!("wtf"); },
-            VRAM_START..EXT_RAM_START => self.vram[address - VRAM_START] = value,
+            VRAM_START..EXT_RAM_START => {
+                if self.ppu.mode != Mode3 {
+                    self.vram[address - VRAM_START] = value
+                }
+            },
             EXT_RAM_START..WRAM_1_START => self.rom.external_ram[address - EXT_RAM_START] = value,
             WRAM_1_START..WRAM_2_START => self.wram_1[address - WRAM_1_START] = value,
             WRAM_2_START..ECH_RAM_START => self.wram_2[address - WRAM_2_START] = value,
-            ECH_RAM_START..OAM_START => {println!("wtf"); }, // mirror of wram 1
+            ECH_RAM_START..OAM_START => {
+                let addr = address - 0x2000;
+
+                if addr < WRAM_2_START {
+                    self.wram_1[addr - WRAM_1_START] = value
+                } else {
+                    self.wram_2[addr - WRAM_2_START] = value
+                }
+            },
             OAM_START..UNUSABLE_START => self.oam[address - OAM_START] = value,
+            UNUSABLE_START..IO_REGISTERS_START => {},
 
             // TEMP
+            STAT => self.write_io(address, value),
             DIV..=TAC => self.write_io(address, value),
+            LCDC => self.write_io(address, value),
+            LY => self.write_io(address, value),
+            LYC => self.write_io(address, value),
+            SCX => self.write_io(address, value),
+            SCY => self.write_io(address, value),
             INTERRUPT_FLAG => self.write_io(address, value),
             INTERRUPT_ENABLE => self.write_io(address, value),
             IO_REGISTERS_START..H_RAM_START => {
@@ -781,7 +874,12 @@ impl Gameboy {
             TAC => self.tac,
 
             // GRAPHICS
+            STAT => self.stat,
             LCDC => self.lcdc,
+            LY => self.ly,
+            LYC => self.lyc,
+            SCX => self.scx,
+            SCY => self.scy,
 
             // INTERRUPTS
             INTERRUPT_FLAG => self.interrupt_flag,
@@ -799,7 +897,17 @@ impl Gameboy {
             TAC => self.tac = value,
 
             // GRAPHICS
+            STAT => self.stat = value,
             LCDC => self.lcdc = value,
+            LY => {},
+            LYC => {
+                self.lyc = value;
+                if (self.stat & 0b0100_0000) > 0 && self.ly == self.lyc {
+                    self.interrupt_flag |= 0b0000_0010;
+                }
+            },
+            SCX => self.scx = value,
+            SCY => self.scy = value,
 
             // INTERRUPTS
             INTERRUPT_FLAG => self.interrupt_flag = value,
@@ -1040,6 +1148,7 @@ impl Gameboy {
         for _ in 0..val {
             let old_clock = self.sysclck;
             self.sysclck = self.sysclck.wrapping_add(1);
+            self.ppu_stuff();
 
             if tac_enabled {
                 let new_clock = self.sysclck;
@@ -1061,10 +1170,131 @@ impl Gameboy {
 
 // PPU / Graphics
 impl Gameboy {
+    fn tile_fetch(&self) -> u16 {
+        let bg_tile_map_base: u16 = if (self.lcdc & 0b0000_1000) >> 3 == 1 {0x9C00} else {0x9800};
+        let (tile_data_area, signed_address) = if (self.lcdc & 0b0001_0000) >> 4 == 1 {(0x8000 as u16, false)} else {(0x9000 as u16, true)};
+
+        let tilemap_x: u16 = ((self.scx as u16 / 8) + self.ppu.fetcher_x as u16) & 0x1F;
+        let tilemap_y: u16 = ((self.ly.wrapping_add(self.scy)) & 0xFF) as u16;
+
+        let tilemap_id = self.vram[(bg_tile_map_base + ((tilemap_y / 8) * 32) + tilemap_x) as usize - VRAM_START];
+
+        let tile_data_addr;
+        if signed_address {
+            tile_data_addr = tile_data_area.wrapping_add_signed(tilemap_id as i8 as i16 * 16) as usize - VRAM_START;
+        } else {
+            tile_data_addr = tile_data_area.wrapping_add(tilemap_id as u16 * 16) as usize - VRAM_START;
+        }
+
+        let tile_offset = (((self.ly.wrapping_add(self.scy)) % 8) * 2) as usize;
+        let tile_data_low = self.vram[tile_data_addr + tile_offset];
+        let tile_data_high = self.vram[(tile_data_addr) + 1 + tile_offset];
+
+        tile_data_reading(tile_data_low, tile_data_high)
+    }
+
+    fn enter_mode(&mut self, mode_entered: PPUMode) {
+        self.ppu.mode = mode_entered;
+
+        let will_issue_interrupt = match self.ppu.mode {
+            PPUMode::Mode0 => (self.stat & 0b0000_1000) > 0,
+            PPUMode::Mode1 => (self.stat & 0b0001_0000) > 0,
+            PPUMode::Mode2 => (self.stat & 0b0010_0000) > 0,
+            _ => false
+        };
+
+        let mode_bits = match self.ppu.mode {
+            PPUMode::Mode0 => 0,
+            PPUMode::Mode1 => 1,
+            PPUMode::Mode2 => 2,
+            PPUMode::Mode3 => 3,
+        };
+
+        self.stat = (self.stat & 0b1111_1100) | mode_bits;
+        if will_issue_interrupt {
+            self.interrupt_flag |= 0b0000_0010;
+        }
+    }
+
     fn ppu_stuff(&mut self) {
-        let dot = self.sysclck % 456;
-        if dot == 456 {
-            self.ly += 1;
+        if (self.lcdc & 0b1000_0000) == 0 {
+            self.ppu.dots = 0;
+            self.ly = 0;
+            self.ppu.fetcher_x = 0;
+            self.enter_mode(PPUMode::Mode0);
+            self.ppu.fifo = PixelFifo { pixel_fifo: [0; 16], fetched_tile_data: 0, lx: 0, len: 0, discarded_pixels: 0 };
+            return;
+        }
+
+        self.ppu.dots += 1;
+
+        if self.ppu.mode == PPUMode::Mode2 {
+            if self.ppu.dots == 80 {
+                self.enter_mode(PPUMode::Mode3);
+                self.ppu.fifo.discarded_pixels = self.scx % 8;
+                self.ppu.fetcher_x = 0;
+            }
+        }
+
+        if self.ppu.mode == PPUMode::Mode3 {
+            // Mode 3
+            if self.ppu.fifo.len <= 8 {
+                let fifo_len = self.ppu.fifo.len;
+                if fifo_len <= 8 {
+                    let tile = self.tile_fetch();
+                    self.ppu.fetcher_x += 1;
+
+                    for (i, n) in (fifo_len..fifo_len+8).enumerate() {
+                        self.ppu.fifo.pixel_fifo[n as usize] = ((tile >> (16 - ((i + 1) * 2))) & 0b11) as u8;
+                    }
+
+                    self.ppu.fifo.len += 8;
+                }
+            }
+            if self.ppu.fifo.len > 8 {
+                if self.ppu.fifo.discarded_pixels > 0 {
+                    self.ppu.fifo.discarded_pixels -= 1;
+                } else {
+                    // push
+                    self.screen_buffer[(self.ppu.fifo.lx) as usize + (self.ly as usize * SCREEN_WIDTH)] = pallete_conversion(self.ppu.fifo.pixel_fifo[0]);
+                    self.ppu.fifo.lx += 1;
+                }
+                self.ppu.fifo.pixel_fifo.copy_within(1.., 0);
+                self.ppu.fifo.len -= 1;
+
+                if self.ppu.fifo.lx == 160 {
+                    self.enter_mode(PPUMode::Mode0);
+
+                    self.ppu.fetcher_x = 0;
+                    self.ppu.fifo = PixelFifo { pixel_fifo: [0; 16], fetched_tile_data: 0, lx: 0, len: 0, discarded_pixels: 0 }
+                }
+            }
+        } else {
+
+        }
+
+        if self.ppu.dots == 456 {
+            if self.ppu.mode == PPUMode::Mode1 && self.ly == 0 {
+                self.enter_mode(PPUMode::Mode2);
+            } else {
+                self.ly += 1;
+            }
+
+            if (self.stat & 0b0100_0000) > 0 && self.ly == self.lyc {
+                self.interrupt_flag |= 0b0000_0010;
+            }
+
+            self.ppu.dots = 0;
+            self.ppu.fetcher_x = 0;
+
+            if self.ly == 144 {
+                self.interrupt_flag |= 0b0000_0001;
+                self.enter_mode(PPUMode::Mode1);
+            } else if self.ly == 153 {
+                self.ly = 0;
+            } else if self.ly < 144 {
+                self.enter_mode(PPUMode::Mode2);
+            }
         }
     }
 }
