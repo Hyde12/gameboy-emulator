@@ -54,7 +54,7 @@ impl Gameboy {
         let tile_data_high = self.vram[(tile_data_addr) + 1 + tile_offset];
 
         // read it as a u16
-        tile_data_reading(tile_data_low, tile_data_high)
+        tile_data_reading(tile_data_low, tile_data_high, false)
     }
 
     fn enter_mode(&mut self, mode_entered: PPUMode) {
@@ -93,7 +93,7 @@ impl Gameboy {
             self.enter_mode(PPUMode::Mode0);
             self.ppu.window_y = 0;
             self.ppu.fifo = PixelFifo {
-                object_pixel_fifo: [0; 16],
+                object_pixel_fifo: [(0, true); 16],
                 pixel_fifo: [0; 16],
                 obj_len: 0,
                 window_triggered: false,
@@ -119,10 +119,10 @@ impl Gameboy {
                     let tile_index = self.oam[object_addr + 2];
                     let attributes = self.oam[object_addr + 3];
 
-                    if ly >= oam_y && ly < oam_y + object_height + object_height {
+                    if ly >= oam_y && ly < oam_y + object_height {
                         let oam_buffer_addr = self.ppu.object_count as usize * 4;
 
-                        self.ppu.oam_buffer[oam_buffer_addr] = (oam_y + (object_height * 2)) as u8;
+                        self.ppu.oam_buffer[oam_buffer_addr] = (oam_y + 16) as u8;
                         self.ppu.oam_buffer[oam_buffer_addr + 1] = oam_x as u8;
                         self.ppu.oam_buffer[oam_buffer_addr + 2] = tile_index;
                         self.ppu.oam_buffer[oam_buffer_addr + 3] = attributes;
@@ -152,7 +152,7 @@ impl Gameboy {
             {
                 self.ppu.fetcher_x = 0;
                 self.ppu.fifo = PixelFifo {
-                    object_pixel_fifo: [0; 16],
+                    object_pixel_fifo: [(0, true); 16],
                     pixel_fifo: [0; 16],
                     obj_len: 0,
                     window_triggered: true,
@@ -195,49 +195,62 @@ impl Gameboy {
                 if self.ppu.fifo.obj_len < 8 {
                     for n in 0..self.ppu.object_count {
                         let object_addr = n as usize * 4;
-                        if (self.ppu.oam_buffer[object_addr + 1]
-                            == self.ppu.fifo.lx.saturating_add(8))
+                        if self.ppu.oam_buffer[object_addr + 1] == self.ppu.fifo.lx + 8
                             && self.ppu.fifo.obj_len < 8
                         // temp ^
                         {
                             let is_tall = self.lcdc & 0b0000_0100 != 0;
                             let sprite_y = self.ppu.oam_buffer[object_addr];
                             let tile_index = self.ppu.oam_buffer[object_addr + 2];
+                            let tile_attributes = self.ppu.oam_buffer[object_addr + 3];
+                            let tile_data_low;
+                            let tile_data_high;
 
-                            if !is_tall || (is_tall && self.ly >= sprite_y.saturating_add(7)) {
-                                let row = self.ly - (sprite_y - 16);
-                                let tile_data_low =
+                            let mut row = (self.ly - (sprite_y - 16)) * 2;
+
+                            if !is_tall {
+                                if tile_attributes & 0b0100_0000 != 0 {
+                                    row = (7 - (self.ly - (sprite_y - 16))) * 2;
+                                }
+
+                                tile_data_low =
                                     self.vram[(0x8000 + (tile_index as usize * 16) + row as usize)
                                         - VRAM_START];
-                                let tile_data_high =
+                                tile_data_high =
                                     self.vram[(0x8001 + (tile_index as usize * 16) + row as usize)
                                         - VRAM_START];
-
-                                let tile = tile_data_reading(tile_data_low, tile_data_high);
-
-                                for (i, n) in (0..8).enumerate() {
-                                    self.ppu.fifo.object_pixel_fifo[n as usize] =
-                                        ((tile >> (16 - ((i + 1) * 2))) & 0b11) as u8;
+                            } else {
+                                if tile_attributes & 0b0100_0000 != 0 {
+                                    row = (15 - (self.ly - (sprite_y - 16))) * 2;
                                 }
-                            } else if false {
-                                // is_tall
-                                println!("{} + 16 - {sprite_y}", self.ly);
-                                let row = (self.ly + 16) - sprite_y;
-                                let tile_data_low = self.vram[(0x8000
-                                    + ((tile_index + 1) as usize * 16)
+
+                                let tile_index = if self.ly < sprite_y.saturating_add(7) {
+                                    tile_index & 0xFE
+                                } else {
+                                    tile_index | 0x01
+                                };
+
+                                tile_data_low = self.vram[(0x8000
+                                    + ((tile_index) as usize * 16)
                                     + row as usize)
                                     - VRAM_START];
-                                let tile_data_high = self.vram[(0x8001
-                                    + ((tile_index + 1) as usize * 16)
+                                tile_data_high = self.vram[(0x8001
+                                    + ((tile_index) as usize * 16)
                                     + row as usize)
                                     - VRAM_START];
+                            }
 
-                                let tile = tile_data_reading(tile_data_low, tile_data_high);
+                            let tile = tile_data_reading(
+                                tile_data_low,
+                                tile_data_high,
+                                tile_attributes & 0b0010_0000 != 0,
+                            );
 
-                                for (i, n) in (0..8).enumerate() {
-                                    self.ppu.fifo.object_pixel_fifo[n as usize] =
-                                        ((tile >> (16 - ((i + 1) * 2))) & 0b11) as u8;
-                                }
+                            for (i, n) in (0..8).enumerate() {
+                                self.ppu.fifo.object_pixel_fifo[n as usize] = (
+                                    ((tile >> (16 - ((i + 1) * 2))) & 0b11) as u8,
+                                    tile_attributes & 0b1000_0000 > 0,
+                                );
                             }
 
                             self.ppu.fifo.obj_len += 8;
@@ -246,6 +259,7 @@ impl Gameboy {
                 }
 
                 let has_obj = self.ppu.fifo.obj_len > 0;
+                let obj_pixel = self.ppu.fifo.object_pixel_fifo[0];
 
                 // dont push the pixels if they are to be discarded
                 if self.ppu.fifo.discarded_pixels > 0 {
@@ -254,13 +268,19 @@ impl Gameboy {
                     // push to the screen, convert them to colors first. if the bg/window prio is off then just return white/lightest color.
                     self.screen_buffer
                         [(self.ppu.fifo.lx) as usize + (self.ly as usize * SCREEN_WIDTH)] =
-                        pallete_conversion(if has_obj && self.lcdc & 0b0000_0010 > 0 {
-                            self.ppu.fifo.object_pixel_fifo[0]
-                        } else if self.lcdc & 0b0000_0001 == 1 {
-                            self.ppu.fifo.pixel_fifo[0]
-                        } else {
-                            0
-                        });
+                        pallete_conversion(
+                            if has_obj
+                                && self.lcdc & 0b0000_0010 > 0
+                                && obj_pixel.0 != 0
+                                && obj_pixel.1 == false
+                            {
+                                obj_pixel.0
+                            } else if self.lcdc & 0b0000_0001 == 1 {
+                                self.ppu.fifo.pixel_fifo[0]
+                            } else {
+                                0
+                            },
+                        );
                     self.ppu.fifo.lx += 1;
                 }
 
@@ -279,7 +299,7 @@ impl Gameboy {
                     self.enter_mode(PPUMode::Mode0);
                     self.ppu.fetcher_x = 0;
                     self.ppu.object_count = 0;
-                    self.ppu.fifo.object_pixel_fifo = [0; 16];
+                    self.ppu.fifo.object_pixel_fifo = [(0, true); 16];
 
                     // if the window y was triggered increment it
                     if self.ppu.fifo.window_triggered {
@@ -288,7 +308,7 @@ impl Gameboy {
 
                     // reset fifo
                     self.ppu.fifo = PixelFifo {
-                        object_pixel_fifo: [0; 16],
+                        object_pixel_fifo: [(0, true); 16],
                         pixel_fifo: [0; 16],
                         obj_len: 0,
                         window_triggered: false,

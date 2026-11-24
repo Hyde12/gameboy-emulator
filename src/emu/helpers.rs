@@ -4,15 +4,21 @@ pub fn pallete_conversion(num: u8) -> u32 {
         1 => 0x8BAC0F,
         2 => 0x306230,
         3 => 0x0F380F,
-        _ => unreachable!()
+        _ => unreachable!(),
     }
 }
 
-pub fn tile_data_reading(tile_data_low: u8, tile_data_high: u8) -> u16 {
+pub fn tile_data_reading(tile_data_low: u8, tile_data_high: u8, reversed: bool) -> u16 {
     let mut pixels: u16 = 0;
 
     for n in 0..8 {
-        let shift = 7 - n;
+        let shift;
+        if !reversed {
+            shift = 7 - n;
+        } else {
+            shift = n;
+        }
+
         let tile_bit_high = ((tile_data_high >> shift) & 1) as u16;
         let tile_bit_low = ((tile_data_low >> shift) & 1) as u16;
 
