@@ -72,6 +72,7 @@ struct PixelFifo {
 
     lx: u8,
     len: u8,
+    obj_len: u8,
     discarded_pixels: u8,
 }
 
@@ -157,6 +158,7 @@ impl Gameboy {
                     pixel_fifo: [0; 16],
                     window_triggered: false,
                     lx: 0,
+                    obj_len: 0,
                     len: 0,
                     discarded_pixels: 0,
                 },

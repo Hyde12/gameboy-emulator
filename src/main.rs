@@ -9,7 +9,8 @@ const HEIGHT: usize = 144;
 
 fn main() {
     let mut gameboy = Gameboy::new();
-    let rom_path = String::from("D:/Projects/GameboyEmulator/ROMs/dmg-acid2.gb");
+    let rom_path = String::from("/home/hyde/Projects/gameboy-emulator/ROMs/dmg-acid2.gb");
+    // let rom_path = String::from("D:/Projects/GameboyEmulator/ROMs/dmg-acid2.gb");
     gameboy.rom.load_rom(rom_path);
 
     // TODO: Actual Options Menu
