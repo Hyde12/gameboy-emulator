@@ -84,7 +84,7 @@ struct PPU {
     penalty: u8,
 
     // mode 2
-    oam_buffer: [u8; 40],
+    oam_buffer: [(u8, u8, u8, u8, usize); 10],
     object_count: u8,
 
     // mode 3
@@ -165,7 +165,7 @@ impl Gameboy {
                     len: 0,
                     discarded_pixels: 0,
                 },
-                oam_buffer: [0; 40],
+                oam_buffer: [(0, 0, 0, 0, 0); 10],
                 object_count: 0,
                 fetcher_x: 0,
                 dots: 0,

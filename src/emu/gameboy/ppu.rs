@@ -120,12 +120,13 @@ impl Gameboy {
                     let attributes = self.oam[object_addr + 3];
 
                     if ly >= oam_y && ly < oam_y + object_height {
-                        let oam_buffer_addr = self.ppu.object_count as usize * 4;
-
-                        self.ppu.oam_buffer[oam_buffer_addr] = (oam_y + 16) as u8;
-                        self.ppu.oam_buffer[oam_buffer_addr + 1] = oam_x as u8;
-                        self.ppu.oam_buffer[oam_buffer_addr + 2] = tile_index;
-                        self.ppu.oam_buffer[oam_buffer_addr + 3] = attributes;
+                        self.ppu.oam_buffer[self.ppu.object_count as usize] = (
+                            (oam_y + 16) as u8,
+                            oam_x as u8,
+                            tile_index,
+                            attributes,
+                            object_addr,
+                        );
 
                         self.ppu.object_count += 1;
                     }
@@ -139,6 +140,8 @@ impl Gameboy {
                     self.ppu.window_y_condition = true;
                 }
 
+                self.ppu.oam_buffer[0..self.ppu.object_count as usize]
+                    .sort_by_key(|obj| (obj.1, obj.4));
                 self.enter_mode(PPUMode::Mode3);
                 self.ppu.fifo.discarded_pixels = self.scx % 8;
                 self.ppu.fetcher_x = 0;
@@ -192,78 +195,74 @@ impl Gameboy {
 
             // if fifo has enough pixels
             if self.ppu.fifo.len > 8 {
-                if self.ppu.fifo.obj_len < 16 {
-                    for n in 0..self.ppu.object_count {
-                        let object_addr = n as usize * 4;
-                        if self.ppu.oam_buffer[object_addr + 1] == self.ppu.fifo.lx + 8
-                            && self.ppu.fifo.obj_len < 8
-                        // temp ^
-                        {
-                            let is_tall = self.lcdc & 0b0000_0100 != 0;
-                            let sprite_y = self.ppu.oam_buffer[object_addr];
-                            let tile_index = self.ppu.oam_buffer[object_addr + 2];
-                            let tile_attributes = self.ppu.oam_buffer[object_addr + 3];
-                            let tile_data_low;
-                            let tile_data_high;
+                for n in 0..self.ppu.object_count as usize {
+                    if self.ppu.oam_buffer[n].1 == self.ppu.fifo.lx + 8
+                    // temp ^
+                    {
+                        let is_tall = self.lcdc & 0b0000_0100 != 0;
+                        let sprite_y = self.ppu.oam_buffer[n].0;
+                        let tile_index = self.ppu.oam_buffer[n].2;
+                        let tile_attributes = self.ppu.oam_buffer[n].3;
+                        let tile_data_low;
+                        let tile_data_high;
 
-                            let mut row = (self.ly - (sprite_y - 16)) * 2;
+                        let mut row = (self.ly - (sprite_y - 16)) * 2;
 
-                            if !is_tall {
-                                if tile_attributes & 0b0100_0000 != 0 {
-                                    row = (7 - (self.ly - (sprite_y - 16))) * 2;
-                                }
-
-                                tile_data_low =
-                                    self.vram[(0x8000 + (tile_index as usize * 16) + row as usize)
-                                        - VRAM_START];
-                                tile_data_high =
-                                    self.vram[(0x8001 + (tile_index as usize * 16) + row as usize)
-                                        - VRAM_START];
-                            } else {
-                                if tile_attributes & 0b0100_0000 != 0 {
-                                    row = (15 - (self.ly - (sprite_y - 16))) * 2;
-                                }
-
-                                let tile_index = if self.ly < sprite_y.saturating_add(7) {
-                                    tile_index & 0xFE
-                                } else {
-                                    tile_index | 0x01
-                                };
-
-                                tile_data_low = self.vram[(0x8000
-                                    + ((tile_index) as usize * 16)
-                                    + row as usize)
-                                    - VRAM_START];
-                                tile_data_high = self.vram[(0x8001
-                                    + ((tile_index) as usize * 16)
-                                    + row as usize)
-                                    - VRAM_START];
+                        if !is_tall {
+                            if tile_attributes & 0b0100_0000 != 0 {
+                                row = (7 - (self.ly - (sprite_y - 16))) * 2;
                             }
 
-                            let tile = tile_data_reading(
-                                tile_data_low,
-                                tile_data_high,
-                                tile_attributes & 0b0010_0000 != 0,
-                            );
+                            tile_data_low = self.vram
+                                [(0x8000 + (tile_index as usize * 16) + row as usize) - VRAM_START];
+                            tile_data_high = self.vram
+                                [(0x8001 + (tile_index as usize * 16) + row as usize) - VRAM_START];
+                        } else {
+                            if tile_attributes & 0b0100_0000 != 0 {
+                                row = (15 - (self.ly - (sprite_y - 16))) * 2;
+                            }
 
-                            let palette = if tile_attributes & 0b0001_0000 == 0 {
-                                self.obj_palettes.0
+                            let tile_index = if self.ly < sprite_y.saturating_add(7) {
+                                tile_index & 0xFE
                             } else {
-                                self.obj_palettes.1
+                                tile_index | 0x01
                             };
-                            for (i, n) in (0..8).enumerate() {
-                                let tile_color_index = (tile >> (16 - ((i + 1) * 2))) & 0b11;
-                                let tile_color = match tile_color_index {
-                                    0 => 0,
-                                    1..=3 => (palette >> (tile_color_index * 2)) & 0b11,
-                                    _ => unreachable!(),
-                                };
+
+                            tile_data_low =
+                                self.vram[(0x8000 + ((tile_index) as usize * 16) + row as usize)
+                                    - VRAM_START];
+                            tile_data_high =
+                                self.vram[(0x8001 + ((tile_index) as usize * 16) + row as usize)
+                                    - VRAM_START];
+                        }
+
+                        let tile = tile_data_reading(
+                            tile_data_low,
+                            tile_data_high,
+                            tile_attributes & 0b0010_0000 != 0,
+                        );
+
+                        let palette = if tile_attributes & 0b0001_0000 == 0 {
+                            self.obj_palettes.0
+                        } else {
+                            self.obj_palettes.1
+                        };
+                        for (i, n) in (0..8).enumerate() {
+                            let tile_color_index = (tile >> (16 - ((i + 1) * 2))) & 0b11;
+                            let tile_color = match tile_color_index {
+                                0 => 0,
+                                1..=3 => (palette >> (tile_color_index * 2)) & 0b11,
+                                _ => unreachable!(),
+                            };
+
+                            if self.ppu.fifo.object_pixel_fifo[n as usize].0 == 0 && tile_color != 0
+                            {
                                 self.ppu.fifo.object_pixel_fifo[n as usize] =
                                     (tile_color, tile_attributes & 0b1000_0000 > 0);
                             }
-
-                            self.ppu.fifo.obj_len += 8;
                         }
+
+                        self.ppu.fifo.obj_len = 8;
                     }
                 }
 
