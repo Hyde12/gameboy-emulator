@@ -56,6 +56,8 @@ const LY: usize = 0xFF44;
 const LYC: usize = 0xFF45;
 const WY: usize = 0xFF4A;
 const WX: usize = 0xFF4B;
+const OBJ_PALETTE_1: usize = 0xFF48;
+const OBJ_PALETTE_2: usize = 0xFF49;
 
 #[derive(PartialEq)]
 enum PPUMode {
@@ -136,6 +138,7 @@ pub struct Gameboy {
     scx: u8,
     wy: u8,
     wx: u8,
+    obj_palettes: (u8, u8),
 
     // // Other Flags
     ei_pending: bool,
@@ -206,6 +209,7 @@ impl Gameboy {
             scx: 0x00,
             wy: 0x00,
             wx: 0x00,
+            obj_palettes: (0xFF, 0xFF),
 
             // other flags
             is_halted: false,

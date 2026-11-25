@@ -192,7 +192,7 @@ impl Gameboy {
 
             // if fifo has enough pixels
             if self.ppu.fifo.len > 8 {
-                if self.ppu.fifo.obj_len < 8 {
+                if self.ppu.fifo.obj_len < 16 {
                     for n in 0..self.ppu.object_count {
                         let object_addr = n as usize * 4;
                         if self.ppu.oam_buffer[object_addr + 1] == self.ppu.fifo.lx + 8
@@ -246,11 +246,20 @@ impl Gameboy {
                                 tile_attributes & 0b0010_0000 != 0,
                             );
 
+                            let palette = if tile_attributes & 0b0001_0000 == 0 {
+                                self.obj_palettes.0
+                            } else {
+                                self.obj_palettes.1
+                            };
                             for (i, n) in (0..8).enumerate() {
-                                self.ppu.fifo.object_pixel_fifo[n as usize] = (
-                                    ((tile >> (16 - ((i + 1) * 2))) & 0b11) as u8,
-                                    tile_attributes & 0b1000_0000 > 0,
-                                );
+                                let tile_color_index = (tile >> (16 - ((i + 1) * 2))) & 0b11;
+                                let tile_color = match tile_color_index {
+                                    0 => 0,
+                                    1..=3 => (palette >> (tile_color_index * 2)) & 0b11,
+                                    _ => unreachable!(),
+                                };
+                                self.ppu.fifo.object_pixel_fifo[n as usize] =
+                                    (tile_color, tile_attributes & 0b1000_0000 > 0);
                             }
 
                             self.ppu.fifo.obj_len += 8;

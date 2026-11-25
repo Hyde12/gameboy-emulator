@@ -198,6 +198,8 @@ impl Gameboy {
             SCY => self.scy,
             WY => self.wy,
             WX => self.wx,
+            OBJ_PALETTE_1 => self.obj_palettes.0,
+            OBJ_PALETTE_2 => self.obj_palettes.1,
 
             // INTERRUPTS
             INTERRUPT_FLAG => self.interrupt_flag,
@@ -229,6 +231,8 @@ impl Gameboy {
             SCY => self.scy = value,
             WY => self.wy = value,
             WX => self.wx = value,
+            OBJ_PALETTE_1 => self.obj_palettes.0 = value,
+            OBJ_PALETTE_2 => self.obj_palettes.1 = value,
 
             // INTERRUPTS
             INTERRUPT_FLAG => self.interrupt_flag = value,
