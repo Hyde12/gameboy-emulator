@@ -233,6 +233,16 @@ impl Gameboy {
             WX => self.wx = value,
             OBJ_PALETTE_1 => self.obj_palettes.0 = value,
             OBJ_PALETTE_2 => self.obj_palettes.1 = value,
+            OAM_DMA => {
+                let orig_source = value as usize * 0x100;
+
+                for i in 0..0xA0 {
+                    let source_data = self.read_bus(orig_source + i);
+                    let destination = 0xFE00 + i;
+
+                    self.oam[destination - OAM_START] = source_data;
+                }
+            }
 
             // INTERRUPTS
             INTERRUPT_FLAG => self.interrupt_flag = value,

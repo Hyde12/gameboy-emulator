@@ -1,5 +1,5 @@
+mod bus;
 mod cpu_alu;
-mod pattern_matching;
 mod ppu;
 mod timers;
 
@@ -58,6 +58,7 @@ const WY: usize = 0xFF4A;
 const WX: usize = 0xFF4B;
 const OBJ_PALETTE_1: usize = 0xFF48;
 const OBJ_PALETTE_2: usize = 0xFF49;
+const OAM_DMA: usize = 0xFF46;
 
 #[derive(PartialEq)]
 enum PPUMode {
