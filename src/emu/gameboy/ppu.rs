@@ -155,9 +155,9 @@ impl Gameboy {
             {
                 self.ppu.fetcher_x = 0;
                 self.ppu.fifo = PixelFifo {
-                    object_pixel_fifo: [(0, true); 16],
+                    object_pixel_fifo: self.ppu.fifo.object_pixel_fifo,
                     pixel_fifo: [0; 16],
-                    obj_len: 0,
+                    obj_len: self.ppu.fifo.obj_len,
                     window_triggered: true,
                     lx: self.ppu.fifo.lx,
                     len: 0,
@@ -250,13 +250,12 @@ impl Gameboy {
                         for (i, n) in (0..8).enumerate() {
                             let tile_color_index = (tile >> (16 - ((i + 1) * 2))) & 0b11;
                             let tile_color = match tile_color_index {
-                                0 => 0,
+                                0 => 50,
                                 1..=3 => (palette >> (tile_color_index * 2)) & 0b11,
                                 _ => unreachable!(),
                             };
 
-                            if self.ppu.fifo.object_pixel_fifo[n as usize].0 == 0 && tile_color != 0
-                            {
+                            if self.ppu.fifo.object_pixel_fifo[n as usize].0 == 0 {
                                 self.ppu.fifo.object_pixel_fifo[n as usize] =
                                     (tile_color, tile_attributes & 0b1000_0000 > 0);
                             }
@@ -279,8 +278,8 @@ impl Gameboy {
                         pallete_conversion(
                             if has_obj
                                 && self.lcdc & 0b0000_0010 > 0
-                                && obj_pixel.0 != 0
-                                && obj_pixel.1 == false
+                                && (!obj_pixel.1 || self.ppu.fifo.pixel_fifo[0] == 0)
+                                && obj_pixel.0 != 50
                             {
                                 obj_pixel.0
                             } else if self.lcdc & 0b0000_0001 == 1 {

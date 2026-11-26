@@ -24,9 +24,19 @@ fn main() {
     window.set_target_fps(60);
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
+        gameboy.select_state = 0x0F;
+        gameboy.dpad_state = 0x0F;
+        for key in window.get_keys() {
+            gameboy.handle_input(key, true);
+        }
         for _ in 0..17_500 {
             gameboy.tick();
         }
+
+        window
+            .get_keys_released()
+            .iter()
+            .for_each(|key| gameboy.handle_input(*key, false));
 
         window
             .update_with_buffer(&gameboy.screen_buffer, WIDTH, HEIGHT)

@@ -5,6 +5,8 @@ mod timers;
 
 use std::io::{self, Write};
 
+use minifb::Key;
+
 use crate::emu::helpers::{pallete_conversion, tile_data_reading};
 
 use super::helpers::combine_bytes;
@@ -59,6 +61,9 @@ const WX: usize = 0xFF4B;
 const OBJ_PALETTE_1: usize = 0xFF48;
 const OBJ_PALETTE_2: usize = 0xFF49;
 const OAM_DMA: usize = 0xFF46;
+
+// Input
+const JOYP: usize = 0xFF00;
 
 #[derive(PartialEq)]
 enum PPUMode {
@@ -141,6 +146,11 @@ pub struct Gameboy {
     wx: u8,
     obj_palettes: (u8, u8),
 
+    // Input
+    joyp: u8,
+    pub dpad_state: u8,
+    pub select_state: u8,
+
     // // Other Flags
     ei_pending: bool,
     is_halted: bool,
@@ -158,7 +168,7 @@ impl Gameboy {
                 window_y: 0,
                 penalty: 0,
                 fifo: PixelFifo {
-                    object_pixel_fifo: [(0, true); 16],
+                    object_pixel_fifo: [(50, true); 16],
                     pixel_fifo: [0; 16],
                     window_triggered: false,
                     lx: 0,
@@ -212,6 +222,11 @@ impl Gameboy {
             wx: 0x00,
             obj_palettes: (0xFF, 0xFF),
 
+            // input
+            joyp: 0xCF,
+            dpad_state: 0xFF,
+            select_state: 0xFF,
+
             // other flags
             is_halted: false,
             halt_bug: false,
@@ -251,6 +266,28 @@ impl Gameboy {
             }
         } else {
             self.t_cycle_add(4);
+        }
+    }
+
+    pub fn handle_input(&mut self, key: Key, is_pressed: bool) {
+        let mapping = match key {
+            Key::X => Some((0, &mut self.select_state)),
+            Key::Z => Some((1, &mut self.select_state)),
+            Key::RightShift => Some((2, &mut self.select_state)),
+            Key::Enter => Some((3, &mut self.select_state)),
+            Key::Right => Some((0, &mut self.dpad_state)),
+            Key::Left => Some((1, &mut self.dpad_state)),
+            Key::Up => Some((2, &mut self.dpad_state)),
+            Key::Down => Some((3, &mut self.dpad_state)),
+            _ => None,
+        };
+
+        if let Some((bit, state)) = mapping {
+            if is_pressed {
+                *state &= !(1 << bit);
+            } else {
+                *state |= 1 << bit;
+            }
         }
     }
 

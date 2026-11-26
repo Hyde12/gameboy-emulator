@@ -124,13 +124,9 @@ impl Gameboy {
             }
             OAM_START..UNUSABLE_START => self.oam[address - OAM_START],
             UNUSABLE_START..IO_REGISTERS_START => 0x00,
-
-            // TEMP
             INTERRUPT_FLAG => self.read_io(address),
             INTERRUPT_ENABLE => self.read_io(address),
-            0xFF00 => 0xFF, // temp
             IO_REGISTERS_START..H_RAM_START => self.read_io(address),
-
             H_RAM_START..INTERRUPT_ENABLE => self.hram[address - H_RAM_START],
             _ => unreachable!("Invalid memory address. Address: {}", address),
         }
@@ -162,8 +158,6 @@ impl Gameboy {
             }
             OAM_START..UNUSABLE_START => self.oam[address - OAM_START] = value,
             UNUSABLE_START..IO_REGISTERS_START => {}
-
-            // TEMP
             INTERRUPT_FLAG => self.write_io(address, value),
             INTERRUPT_ENABLE => self.write_io(address, value),
             IO_REGISTERS_START..H_RAM_START => {
@@ -175,7 +169,6 @@ impl Gameboy {
                     self.write_io(address, value);
                 }
             }
-
             H_RAM_START..INTERRUPT_ENABLE => self.hram[address - H_RAM_START] = value,
             _ => unreachable!("Invalid memory address. Address: {}", address),
         }
@@ -200,6 +193,21 @@ impl Gameboy {
             WX => self.wx,
             OBJ_PALETTE_1 => self.obj_palettes.0,
             OBJ_PALETTE_2 => self.obj_palettes.1,
+
+            // Input
+            JOYP => {
+                let mut result = 0xCF | (self.joyp & 0b0011_0000);
+
+                if self.joyp & 0b0010_0000 == 0 {
+                    result &= 0xF0 | self.select_state;
+                }
+
+                if self.joyp & 0b0001_0000 == 0 {
+                    result &= 0xF0 | self.dpad_state;
+                }
+
+                result
+            }
 
             // INTERRUPTS
             INTERRUPT_FLAG => self.interrupt_flag,
@@ -243,6 +251,9 @@ impl Gameboy {
                     self.oam[destination - OAM_START] = source_data;
                 }
             }
+
+            // Input
+            JOYP => self.joyp = (self.joyp & 0xCF) | (value & 0x30),
 
             // INTERRUPTS
             INTERRUPT_FLAG => self.interrupt_flag = value,

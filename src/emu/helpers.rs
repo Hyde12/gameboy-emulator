@@ -1,3 +1,5 @@
+use minifb::Key;
+
 pub fn pallete_conversion(num: u8) -> u32 {
     match num {
         0 => 0x9BBC0F,
