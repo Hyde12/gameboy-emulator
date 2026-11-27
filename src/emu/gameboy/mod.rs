@@ -25,7 +25,7 @@ const HRAM_SIZE: usize = 127;
 const OAM_SIZE: usize = 160;
 
 // // Memory Pointers
-const ENTRY_POINT: usize = 0x0100;
+const ENTRY_POINT: usize = 0x0000;
 const ROM_BANK_0: usize = 0x0000;
 const ROM_BANK_1: usize = 0x4000;
 const VRAM_START: usize = 0x8000;

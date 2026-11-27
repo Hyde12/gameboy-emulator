@@ -101,6 +101,10 @@ impl Gameboy {
         self.t_cycle_add(4);
 
         match address {
+            0x00..=0xFF if !self.rom.boot_rom_finished => {
+                self.rom.boot_rom_data[address - ROM_BANK_0]
+            }
+
             ROM_BANK_0..ROM_BANK_1 => self.rom.data[address - ROM_BANK_0],
             ROM_BANK_1..VRAM_START => self.rom.data[address - ROM_BANK_0],
             VRAM_START..EXT_RAM_START => {
@@ -219,6 +223,12 @@ impl Gameboy {
 
     fn write_io(&mut self, address: usize, value: u8) {
         match address {
+            // BOOT
+            0xFF50 => {
+                if value != 0 {
+                    self.rom.boot_rom_finished = true
+                }
+            }
             // TIMERS
             DIV => self.sysclck = 0,
             TIMA => self.tima = value,
